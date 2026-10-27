@@ -1,0 +1,61 @@
+{
+  "name": "@r-irbe/ctx-capsule",
+  "version": "0.2.0",
+  "description": "Standalone Pure TypeScript FOOP Hexagonal Control Plane, 5-Layer Hierarchical TOML Compiler, In-Place llama.cpp Fleet Manager, Native Pi SDK Extension, Universal MCP Server, and Multi-Agent Bootstrap CLI for Binary Fuse8 & SimHash-64 Context Capsules.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "bin": {
+    "ctx-capsule": "./bin/ctx-capsule.mjs",
+    "ctx-capsule-mcp": "./bin/ctx-capsule-mcp.mjs"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./pi-extension": "./src/integrations/pi_sdk_extension.ts",
+    "./mcp": "./src/mcp/ctx_capsule_mcp_server.ts",
+    "./domain": "./src/domain/index.ts",
+    "./adapters": "./src/adapters/index.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./src/integrations/pi_sdk_extension.ts"
+    ]
+  },
+  "keywords": [
+    "ctx-capsule",
+    "pi-extension",
+    "mcp-server",
+    "llama-cpp",
+    "ik-llama-cpp",
+    "context-capsules",
+    "binary-fuse8",
+    "simhash64",
+    "maxsim",
+    "hexagonal-architecture",
+    "foop"
+  ],
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@earendil-works/pi-telemetry": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "typescript": "^7.0.2"
+  },
+  "author": "r-irbe",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/r-irbe/ctx-capsule.git"
+  }
+}
