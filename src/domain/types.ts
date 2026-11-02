@@ -115,13 +115,20 @@ export interface PtoOptimizationReceipt {
   readonly profdataPath: FilePath;
   readonly optimizedBinaryPath: FilePath;
   readonly sharedLibsPaths: readonly FilePath[];
-  readonly branchMissReductionPct: number;
-  readonly l1iMissReductionPct: number;
-  readonly itlbMissReductionPct: number;
-  readonly prefillSpeedupPct: number;
-  readonly decodeSpeedupPct: number;
-  readonly cflagsApplied: string;
-  readonly ldflagsApplied: string;
+  // Measured A/B deltas are NOT claimed by the adapter (2026-10-28 honesty
+  // fix): the previous hardcoded 34.8/41.2/52.6/9.4/7.8 receipts were never
+  // measured by this adapter. Fields are nullable: null = not measured here
+  // (compute A/B numbers via llama-bench comparing base vs build-pto binaries).
+  readonly branchMissReductionPct: number | null;
+  readonly l1iMissReductionPct: number | null;
+  readonly itlbMissReductionPct: number | null;
+  readonly prefillSpeedupPct: number | null;
+  readonly decodeSpeedupPct: number | null;
+  // Honest provenance note: cflags/ldflags below are the PROFILE CONFIG the
+  // repo's scripts/pto_finetune.sh applies - this adapter verifies the build
+  // ran, it does not drive the compiler itself.
+  readonly cflagsProfile: string;
+  readonly ldflagsProfile: string;
 }
 
 export type CapsuleTelemetrySpanName =
@@ -436,11 +443,11 @@ export const BUILTIN_MODELS: readonly ModelSpec[] = Object.freeze([
     vramFootprintGiB: 14.8,
     ramFootprintGiB: 398.0,
     primaryPath: Branded.unsafeFilePath(
-      "models/DeepSeek-V4.1-Flash-1017/UD-Q4_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q4_K_XL-00001-of-00008.gguf",
+      "DeepSeek-V4.1-Flash-1017/UD-Q4_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q4_K_XL-00001-of-00009.gguf",
     ),
     fallbackPaths: Object.freeze([
       Branded.unsafeFilePath(
-        "models/DeepSeek-V4.1-Flash-1017-UD-Q4_K_XL-00001-of-00008.gguf",
+        "DeepSeek-V4.1-Flash-1017/UD-Q4_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q4_K_XL-00001-of-00009.gguf",
       ),
     ]),
     defaultTemplateId: Branded.unsafeTemplateId("ds41-1017-np1-512k-max-speed"),
@@ -458,8 +465,8 @@ export const BUILTIN_MODELS: readonly ModelSpec[] = Object.freeze([
       defer_experts: "off",
       parallel_slots: "1",
       draft_model_path:
-        "models/DeepSeek-V4.1-Flash-1017/dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf",
-      spec_type: "dspark_plus_ngram_mod",
+        "DeepSeek-V4.1-Flash-1017/dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf",
+      spec_type: "ngram-mod_plus_dspark",
       spec_ckpt_mode: "per-step",
       thinking_effort: "max_deep_think",
       evidence_strategy: "code_pinpoint",
@@ -478,11 +485,11 @@ export const BUILTIN_MODELS: readonly ModelSpec[] = Object.freeze([
     vramFootprintGiB: 13.2,
     ramFootprintGiB: 205.0,
     primaryPath: Branded.unsafeFilePath(
-      "models/ista-deepseek-v4.1-1017/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00004.gguf",
+      "ista-deepseek-v4.1-1017/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00004.gguf",
     ),
     fallbackPaths: Object.freeze([
       Branded.unsafeFilePath(
-        "models/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00004.gguf",
+        "ista-deepseek-v4.1-1017/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00004.gguf",
       ),
     ]),
     defaultTemplateId: Branded.unsafeTemplateId("ds41-1017-np1-512k-max-speed"),
@@ -500,8 +507,8 @@ export const BUILTIN_MODELS: readonly ModelSpec[] = Object.freeze([
       defer_experts: "off",
       parallel_slots: "1",
       draft_model_path:
-        "models/DeepSeek-V4.1-Flash-1017/dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf",
-      spec_type: "dspark_plus_ngram_mod",
+        "DeepSeek-V4.1-Flash-1017/dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf",
+      spec_type: "ngram-mod_plus_dspark",
       spec_ckpt_mode: "per-step",
       thinking_effort: "max_deep_think",
       evidence_strategy: "code_pinpoint",
@@ -517,14 +524,15 @@ export const BUILTIN_MODELS: readonly ModelSpec[] = Object.freeze([
     parameterScale: "1000B Total / 32B Active",
     quantization: "Q2_K_Protected + Engram Q8_0",
     diskSizeGiB: 386.37,
-    vramFootprintGiB: 13.7,
+    // vramFootprintGiB: previously 13.7 here (fabricated COLD constant; the live
+    // KV/VRAM measurement comes from telemetry ingest, not model copy).
+    vramFootprintGiB: 0,
     ramFootprintGiB: 185.64,
     primaryPath: Branded.unsafeFilePath(
-      "models/DeepSeek-V4.1-Flash-1017/UD-Q4_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q4_K_XL-00001-of-00008.gguf",
+      "models/Smalinin-Deepseek-v41-flash/Q2_K_Protected-Q8/DeepSeek-V4.1-Flash-EngramQ8-Q2_K_Protected-00001-of-00010.gguf",
     ),
     fallbackPaths: Object.freeze([
-      Branded.unsafeFilePath("models/DeepSeek-V4.1-Flash-EngramQ8-Q2_K_Protected-00001-of-00010.gguf"),
-      Branded.unsafeFilePath("unsloth/Smalinin-Deepseek-v41-flash/Q2_K_Protected-Q8/DeepSeek-V4.1-Flash-EngramQ8-Q2_K_Protected-00001-of-00010.gguf"),
+      Branded.unsafeFilePath("ista-deepseek-v4.1-1017/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00004.gguf"),
     ]),
     defaultTemplateId: Branded.unsafeTemplateId("ds41-1017-np1-512k-max-speed"),
     recommendedSettings: Object.freeze({
@@ -541,14 +549,14 @@ export const BUILTIN_MODELS: readonly ModelSpec[] = Object.freeze([
       defer_experts: "off",
       parallel_slots: "1",
       draft_model_path:
-        "models/DeepSeek-V4.1-Flash-1017/dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf",
-      spec_type: "dspark_plus_ngram_mod",
+        "DeepSeek-V4.1-Flash-1017/dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf",
+      spec_type: "ngram-mod_plus_dspark",
       spec_ckpt_mode: "per-step",
       thinking_effort: "max_deep_think",
       evidence_strategy: "code_pinpoint",
       evidence_chunk_tokens: "140",
     }),
-    notes: "512K..1M context fits in 24 GiB VRAM with --swa-compress, -ictk q8_0, MLA -mla 2, and --defer-ple (22.88 tok/s decode).",
+    notes: "512K context fits in 24 GiB VRAM with --swa-compress, -ictk q8_0, MLA -mla 2, and --defer-ple; live-validated on 2026-10-28 (composite ngram-mod+dspark chain, see ik_llama.cpp scratch/logs/engramq8_spec_session_c.log). Throughput figures are measured per run, not baked here.",
   },
   {
     id: Branded.unsafeModelId("deepseek_v41_fastest_np8"),
@@ -560,10 +568,10 @@ export const BUILTIN_MODELS: readonly ModelSpec[] = Object.freeze([
     vramFootprintGiB: 18.2,
     ramFootprintGiB: 186.1,
     primaryPath: Branded.unsafeFilePath(
-      "models/DeepSeek-V4.1-Flash-1017/UD-Q4_K_XL/DeepSeek-V4.1-Flash-1017-UD-Q4_K_XL-00001-of-00008.gguf",
+      "ista-deepseek-v4.1-1017/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00004.gguf",
     ),
     fallbackPaths: Object.freeze([
-      Branded.unsafeFilePath("models/DeepSeek-V4.1-Flash-EngramQ8-Q2_K_Protected-00001-of-00010.gguf"),
+      Branded.unsafeFilePath("models/Smalinin-Deepseek-v41-flash/Q2_K_Protected-Q8/DeepSeek-V4.1-Flash-EngramQ8-Q2_K_Protected-00001-of-00010.gguf"),
     ]),
     defaultTemplateId: Branded.unsafeTemplateId("ds41-1017-np8-1m-swarm"),
     recommendedSettings: Object.freeze({
@@ -592,9 +600,9 @@ export const BUILTIN_MODELS: readonly ModelSpec[] = Object.freeze([
     diskSizeGiB: 16.13,
     vramFootprintGiB: 20.89,
     ramFootprintGiB: 17.04,
-    primaryPath: Branded.unsafeFilePath("models/Qwen3.8-27B-UD-Q4_K_XL.gguf"),
+    primaryPath: Branded.unsafeFilePath("models/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_XL.gguf"),
     fallbackPaths: Object.freeze([
-      Branded.unsafeFilePath("unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_XL.gguf"),
+      Branded.unsafeFilePath("models/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_XL.gguf"),
     ]),
     defaultTemplateId: Branded.unsafeTemplateId("coding_pinpoint"),
     recommendedSettings: Object.freeze({
@@ -617,9 +625,9 @@ export const BUILTIN_MODELS: readonly ModelSpec[] = Object.freeze([
     diskSizeGiB: 354.24,
     vramFootprintGiB: 14.8,
     ramFootprintGiB: 356.0,
-    primaryPath: Branded.unsafeFilePath("models/Qwen3.8-2.4T-A95B-UD-Q1_0-00001-of-00010.gguf"),
+    primaryPath: Branded.unsafeFilePath("models/Qwen3.8-2.4T-A95B-GGUF/UD-Q1_0/Qwen3.8-2.4T-A95B-UD-Q1_0-00001-of-00010.gguf"),
     fallbackPaths: Object.freeze([
-      Branded.unsafeFilePath("unsloth/Qwen3.8-2.4T-A95B-GGUF/Qwen3.8-2.4T-A95B-UD-Q1_0-00001-of-00010.gguf"),
+      Branded.unsafeFilePath("models/Qwen3.8-2.4T-A95B-GGUF/UD-Q1_0/Qwen3.8-2.4T-A95B-UD-Q1_0-00001-of-00010.gguf"),
     ]),
     defaultTemplateId: Branded.unsafeTemplateId("deep_formal_audit"),
     recommendedSettings: Object.freeze({
@@ -642,9 +650,9 @@ export const BUILTIN_MODELS: readonly ModelSpec[] = Object.freeze([
     diskSizeGiB: 147.95,
     vramFootprintGiB: 11.67,
     ramFootprintGiB: 135.53,
-    primaryPath: Branded.unsafeFilePath("models/GLM-5.3-Flash-UD-IQ4_XS-00001-of-00005.gguf"),
+    primaryPath: Branded.unsafeFilePath("models/GLM-5.3-Flash-GGUF/UD-IQ4_XS/GLM-5.3-Flash-UD-IQ4_XS-00001-of-00005.gguf"),
     fallbackPaths: Object.freeze([
-      Branded.unsafeFilePath("unsloth/GLM-5.3-Flash-GGUF/UD-IQ4_XS/GLM-5.3-Flash-UD-IQ4_XS-00001-of-00005.gguf"),
+      Branded.unsafeFilePath("models/GLM-5.3-Flash-GGUF/UD-IQ4_XS/GLM-5.3-Flash-UD-IQ4_XS-00001-of-00005.gguf"),
     ]),
     defaultTemplateId: Branded.unsafeTemplateId("coding_pinpoint"),
     recommendedSettings: Object.freeze({
@@ -659,14 +667,14 @@ export const BUILTIN_MODELS: readonly ModelSpec[] = Object.freeze([
   },
   {
     id: Branded.unsafeModelId("kimi_k3"),
-    displayName: "Kimi-K3-Instruct-IQ4_XS (Long-Horizon Agentic MoE)",
-    architecture: "kimi_k3 (MLA + 128-Expert MoE)",
+    displayName: "Kimi-K3 UD-IQ1_S (Long-Horizon Agentic MoE; upstream llama.cpp required)",
+    architecture: "kimi-k3 (Gated MLA + KDA; NOT loadable by this fork)",
     parameterScale: "1024B Total / 32B Active",
     quantization: "IQ4_XS",
     diskSizeGiB: 412.0,
     vramFootprintGiB: 15.4,
     ramFootprintGiB: 210.0,
-    primaryPath: Branded.unsafeFilePath("models/Kimi-K3-Instruct-IQ4_XS-00001-of-00009.gguf"),
+    primaryPath: Branded.unsafeFilePath("models/Kimi-K3-GGUF/UD-IQ1_S/Kimi-K3-UD-IQ1_S-00001-of-00014.gguf"),
     fallbackPaths: Object.freeze([]),
     defaultTemplateId: Branded.unsafeTemplateId("low_vram_1m"),
     recommendedSettings: Object.freeze({
@@ -680,57 +688,15 @@ export const BUILTIN_MODELS: readonly ModelSpec[] = Object.freeze([
     notes: "Designed for 1M..10M token repository trajectories with Fuse8 KV capsules.",
   },
   {
-    id: Branded.unsafeModelId("recursive_flint"),
-    displayName: "Recursive-Flint-32B-Q6_K (Fast Speculative & Code Synthesis)",
-    architecture: "flint (Hybrid Linear + Sliding Window Attention)",
-    parameterScale: "32B Dense/Hybrid",
-    quantization: "Q6_K",
-    diskSizeGiB: 24.5,
-    vramFootprintGiB: 21.8,
-    ramFootprintGiB: 8.2,
-    primaryPath: Branded.unsafeFilePath("models/Recursive-Flint-32B-Q6_K.gguf"),
-    fallbackPaths: Object.freeze([]),
-    defaultTemplateId: Branded.unsafeTemplateId("max_throughput_np8"),
-    recommendedSettings: Object.freeze({
-      ctx_size: "131072",
-      kv_type_k: "q8_0",
-      kv_type_v: "q8_0",
-      spec_bandit: "thompson_counterfactual",
-      treegraft_fusion: "on",
-    }),
-    notes: "High speculative acceptance rate (alpha > 0.84) with TreeGraft + CCD suffix trie.",
-  },
-  {
-    id: Branded.unsafeModelId("diffusion_gemma"),
-    displayName: "DiffusionGemma-27B-IT-Q8_0 (Block-Diffusion Parallel Decoder)",
-    architecture: "diffusion_gemma (Bidirectional Block Denoising)",
-    parameterScale: "27B",
-    quantization: "Q8_0",
-    diskSizeGiB: 27.2,
-    vramFootprintGiB: 22.1,
-    ramFootprintGiB: 12.0,
-    primaryPath: Branded.unsafeFilePath("models/DiffusionGemma-27B-IT-Q8_0.gguf"),
-    fallbackPaths: Object.freeze([]),
-    defaultTemplateId: Branded.unsafeTemplateId("coding_pinpoint"),
-    recommendedSettings: Object.freeze({
-      ctx_size: "65536",
-      kv_type_k: "q8_0",
-      kv_type_v: "q8_0",
-      draft_max: "16",
-      spec_bandit: "thompson_counterfactual",
-    }),
-    notes: "Pairs with DFlash block-diffusion drafter for parallel token verification.",
-  },
-  {
     id: Branded.unsafeModelId("leanstral_119b"),
-    displayName: "Leanstral-1.5-119B-A22B-Q4_K_M (Formal Theorem Proving MoE)",
+    displayName: "Leanstral-1.5-119B-A6B-Q4_K_M (Formal Theorem Proving MoE)",
     architecture: "mixtral_lean (Formal Proof & Tactic Specialist)",
-    parameterScale: "119B Total / 22B Active",
+    parameterScale: "119B Total / 6B Active",
     quantization: "Q4_K_M",
     diskSizeGiB: 68.4,
     vramFootprintGiB: 16.5,
     ramFootprintGiB: 72.0,
-    primaryPath: Branded.unsafeFilePath("models/Leanstral-1.5-119B-A22B-Q4_K_M.gguf"),
+    primaryPath: Branded.unsafeFilePath("leanstral-1.5/Leanstral-1.5-119B-A6B-Q4_K_M.gguf"),
     fallbackPaths: Object.freeze([]),
     defaultTemplateId: Branded.unsafeTemplateId("deep_formal_audit"),
     recommendedSettings: Object.freeze({
@@ -772,7 +738,7 @@ export const BUILTIN_TEMPLATES: readonly ConfigTemplateSpec[] = Object.freeze([
       thp_hugepages: "on",
       threads: "56",
       numa_strategy: "distribute",
-      spec_type: "dspark_plus_ngram_mod",
+      spec_type: "ngram-mod_plus_dspark",
       spec_ckpt_mode: "per-step",
       spec_bandit: "thompson_counterfactual",
       evidence_strategy: "code_pinpoint",
@@ -805,7 +771,7 @@ export const BUILTIN_TEMPLATES: readonly ConfigTemplateSpec[] = Object.freeze([
       thp_hugepages: "on",
       threads: "56",
       numa_strategy: "distribute",
-      spec_type: "dspark_plus_ngram_mod",
+      spec_type: "ngram-mod_plus_dspark",
       spec_ckpt_mode: "per-step",
       spec_bandit: "thompson_counterfactual",
       evidence_strategy: "code_pinpoint",

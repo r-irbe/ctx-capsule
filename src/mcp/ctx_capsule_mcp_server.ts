@@ -10,6 +10,8 @@
  *   5. `capsule_pto_tune`
  */
 
+import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import * as readline from "node:readline";
 import { packContextCapsules } from "../domain/evidence_packer.ts";
 import { transition } from "../domain/reducer.ts";
@@ -497,4 +499,28 @@ export function startStdioMcpServer(options?: CtxCapsuleMcpServerOptions): CtxCa
   });
 
   return server;
+}
+
+// Boot the stdio loop only when this module is the process entry file
+// (pattern from src/mcp/servers/*.ts): library imports of capsule/index.ts
+// re-export this module, so the guard keeps those imports side-effect free.
+//
+// The workspace root is not reconstructed from argv; it comes from the
+// CTX_CAPSULE_WORKSPACE_ROOT env var set by the pi MCP config, or cwd.
+function resolveCapsuleMcpWorkspaceRoot(): string {
+  if (process.env.CTX_CAPSULE_WORKSPACE_ROOT) {
+    return process.env.CTX_CAPSULE_WORKSPACE_ROOT;
+  }
+  // Invoked as an entry file: cwd is the workspace the client launched from.
+  return process.cwd();
+}
+
+if (
+  process.argv[1] &&
+  pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url
+) {
+  startStdioMcpServer({
+    workspaceRoot: resolveCapsuleMcpWorkspaceRoot(),
+    processMode: process.env.CTX_CAPSULE_MCP_LIVE === "1" ? "live" : "dry_run",
+  });
 }

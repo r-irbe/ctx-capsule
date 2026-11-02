@@ -82,13 +82,15 @@ export class ClangLldPtoOptimizationAdapter implements PtoOptimizationPort {
         profdataPath: spec.profdataPath,
         optimizedBinaryPath: spec.optimizedBinaryPath,
         sharedLibsPaths: spec.sharedLibsPaths,
-        branchMissReductionPct: 34.8,
-        l1iMissReductionPct: 41.2,
-        itlbMissReductionPct: 52.6,
-        prefillSpeedupPct: 9.4,
-        decodeSpeedupPct: 7.8,
-        cflagsApplied,
-        ldflagsApplied,
+        // 2026-10-28 honesty fix: A/B deltas are not measured by this adapter
+        // (null = not measured); measure with llama-bench base vs build-pto.
+        branchMissReductionPct: null,
+        l1iMissReductionPct: null,
+        itlbMissReductionPct: null,
+        prefillSpeedupPct: null,
+        decodeSpeedupPct: null,
+        cflagsProfile: cflagsApplied,
+        ldflagsProfile: ldflagsApplied,
       });
       this.receiptsHistory.push(receipt);
       return Result.ok(receipt);
@@ -148,13 +150,14 @@ export class ClangLldPtoOptimizationAdapter implements PtoOptimizationPort {
           profdataPath: Branded.unsafeFilePath(absProfdata),
           optimizedBinaryPath: spec.optimizedBinaryPath,
           sharedLibsPaths: spec.sharedLibsPaths,
-          branchMissReductionPct: 34.8,
-          l1iMissReductionPct: 41.2,
-          itlbMissReductionPct: 52.6,
-          prefillSpeedupPct: 9.4,
-          decodeSpeedupPct: 7.8,
-          cflagsApplied,
-          ldflagsApplied,
+          // 2026-10-28 honesty fix: not measured by this adapter.
+          branchMissReductionPct: null,
+          l1iMissReductionPct: null,
+          itlbMissReductionPct: null,
+          prefillSpeedupPct: null,
+          decodeSpeedupPct: null,
+          cflagsProfile: cflagsApplied,
+          ldflagsProfile: ldflagsApplied,
         });
         this.receiptsHistory.push(receipt);
         return receipt;

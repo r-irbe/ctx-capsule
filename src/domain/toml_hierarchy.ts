@@ -344,7 +344,7 @@ export function renderCompiledModelsToml(
     if (rec.draft_model_path) {
       lines.push(`draft_model = "${escapeTomlString(rec.draft_model_path)}"`);
       lines.push(`ngld = 99`);
-      lines.push(`spec_type = ["dspark:n_max=6,n_min=1", "ngram-mod:n_max=6,n_min=2"]`);
+      lines.push(`spec_type = ["ngram-mod:n_max=6,n_min=2", "dspark:n_max=6,n_min=1"]`);
       lines.push(`spec_ckpt_mode = "per-step"`);
       lines.push(`spec_autotune = true`);
     }
@@ -469,6 +469,25 @@ export function parseLayeredTomlDocument(
  * Includes full DeepSeek-V4.1-Flash-1017 production flag support (`--swa-compress`, `-ictk`,
  * `-fidx`, `-dsa -dsatk 1024`, `--defer-ple`, DSpark + `ngram-mod` speculative chain, and UNREAL evidence filter).
  */
+/**
+ * Default model checkpoint root -- matches the `LLAMA_MODEL_ROOT` convention used
+ * by `scripts/launch_*.sh`. Overridable via env `LLAMA_MODEL_ROOT` or the
+ * `model_root` resolved setting.
+ */
+const DEFAULT_MODEL_ROOT = "/home/radu/vm/llm";
+
+function resolveModelFilePath(
+  raw: string,
+  resolved: Readonly<Record<string, string>>,
+): string {
+  if (raw.startsWith("/")) {
+    return raw;
+  }
+  const envRoot = typeof process !== "undefined" ? process.env?.LLAMA_MODEL_ROOT : undefined;
+  const root = resolved.model_root?.trim() || envRoot?.trim() || DEFAULT_MODEL_ROOT;
+  return `${root.replace(/\/+$/, "")}/${raw}`;
+}
+
 export function buildLlamaServerCliArgs(
   model: ModelSpec,
   instance: LlamaInstanceSpec,
@@ -481,7 +500,7 @@ export function buildLlamaServerCliArgs(
 
   const args: string[] = [
     "-m",
-    model.primaryPath,
+    resolveModelFilePath(model.primaryPath, resolved),
     "--host",
     instance.host,
     "--port",
@@ -536,12 +555,13 @@ export function buildLlamaServerCliArgs(
   }
 
   if (isDeepSeekV41) {
-    args.push("-fmoe", "-ser", "3,1");
+    // NOTE: fused MoE is enabled by default in this engine; `-fmoe` is NOT a
+    // valid server flag (the parse rejects it). Nothing to emit.
   }
 
-  const ot = model.recommendedSettings.override_tensor;
-  if (ot && ot !== "none") {
-    args.push("-ot", ot);
+  const override = resolved.override_tensor ?? model.recommendedSettings.override_tensor;
+  if (override && override !== "none") {
+    args.push("-ot", override);
   }
 
   const deferPle = resolved.defer_ple ?? model.recommendedSettings.defer_ple;
@@ -563,13 +583,13 @@ export function buildLlamaServerCliArgs(
   if (draftModelPath && Number(np) <= 2) {
     args.push(
       "-md",
-      draftModelPath,
+      resolveModelFilePath(draftModelPath, resolved),
       "-ngld",
       "99",
       "--spec-type",
-      "dspark:n_max=6,n_min=1",
-      "--spec-type",
       "ngram-mod:n_max=6,n_min=2",
+      "--spec-type",
+      "dspark:n_max=6,n_min=1",
       "--spec-ckpt-mode",
       "per-step",
     );

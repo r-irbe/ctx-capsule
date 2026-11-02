@@ -81,17 +81,22 @@ export function createInitialControlState(options?: {
     templates: BUILTIN_TEMPLATES,
     hardwareProfiles: BUILTIN_HARDWARE_PROFILES,
     instances: DEFAULT_LLAMA_INSTANCES,
+    // Honesty fix (2026-10-28): the previous hardcoded plausible-but-fake
+    // metrics (kvVramUsedGiB 13.7, prefillSpeedTokPerSec 173.2, ...) displayed
+    // fabricated values while the server was offline. Initial state is now
+    // zeroed; every live value comes from telemetry ingest (reducer.ts ingest
+    // handlers overwrite these when fresh observations arrive).
     metrics: Object.freeze({
-      totalContextTokens: 524288,
-      activeHotVramTokens: 104858,
-      warmRamTokens: 65536,
-      coldCapsuleTokens: 353894,
-      evictedCapsulesCount: 5529,
-      wokenCapsulesLastTurn: 2,
-      kvVramUsedGiB: 13.7,
+      totalContextTokens: 0,
+      activeHotVramTokens: 0,
+      warmRamTokens: 0,
+      coldCapsuleTokens: 0,
+      evictedCapsulesCount: 0,
+      wokenCapsulesLastTurn: 0,
+      kvVramUsedGiB: 0,
       kvVramBudgetGiB: 24.0,
-      prefillSpeedTokPerSec: 173.2,
-      decodeSpeedTokPerSec: 22.88,
+      prefillSpeedTokPerSec: 0,
+      decodeSpeedTokPerSec: 0,
     }),
     systemTelemetry: Object.freeze({
       serverOnline: false,
@@ -120,7 +125,7 @@ export function createInitialControlState(options?: {
         timestampIso: "2026-10-27T05:00:00.000Z",
         spanName: "capsule.config.init",
         status: "ok",
-        message: "Initialized FOOP Hexagonal Control State (11 models, 8 templates, 3 fleet instances)",
+        message: "Initialized FOOP Hexagonal Control State (9 models, 8 templates, 3 fleet instances)",
         prevHashHex: "0000000000000000",
         entryHashHex: "a91f4c08e2b73104",
       },

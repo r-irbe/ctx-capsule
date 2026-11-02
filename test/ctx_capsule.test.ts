@@ -99,9 +99,9 @@ describe("ctx-capsule FOOP Result & Branded Type Primitives", () => {
 });
 
 describe("ctx-capsule Pure FOOP State Machine, TOML Hierarchy & Gate 4 CLI Flags", () => {
-  it("initializes with 11 built-in models, 8 templates, and 3 fleet instances", () => {
+  it("initializes with 9 built-in models, 8 templates, and 3 fleet instances", () => {
     const state = createInitialControlState();
-    assert.equal(state.models.length, 11);
+    assert.equal(state.models.length, 9);
     assert.equal(state.templates.length, 8);
     assert.equal(state.instances.length, 3);
     assert.equal(state.activeModelId, "deepseek_v41_flash");
@@ -157,7 +157,7 @@ describe("ctx-capsule Pure FOOP State Machine, TOML Hierarchy & Gate 4 CLI Flags
     const bundle = bundleRes.value;
     assert.match(bundle.defaultsToml, /\[defaults\]/);
     assert.match(bundle.defaultsToml, /\[pto\]/);
-    assert.equal(Object.keys(bundle.modelsById).length, 11);
+    assert.equal(Object.keys(bundle.modelsById).length, 9);
     assert.equal(Object.keys(bundle.templatesById).length, 8);
 
     const parsedDefaults = parseLayeredTomlDocument("00-defaults.toml", bundle.defaultsToml);
@@ -486,9 +486,10 @@ describe("Tier 2: Universal Stdio JSON-RPC 2.0 MCP Server (ctx_capsule_mcp_serve
         },
       });
       const ptoData = JSON.parse((ptoResp?.result as any).content[0].text) as {
-        ptoReceipt: { branchMissReductionPct: number };
+        ptoReceipt: { branchMissReductionPct: number | null; cflagsProfile: string };
       };
-      assert.equal(ptoData.ptoReceipt.branchMissReductionPct > 30, true);
+      assert.equal(ptoData.ptoReceipt.branchMissReductionPct, null);
+      assert.equal(ptoData.ptoReceipt.cflagsProfile.includes("-O3"), true);
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true });
     }

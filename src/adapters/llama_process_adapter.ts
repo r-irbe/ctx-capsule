@@ -62,15 +62,18 @@ export class LlamaFleetProcessAdapter implements LlamaFleetProcessPort {
     const commandLine = `${absBinary} ${cliArgs.join(" ")}`;
 
     if (this.mode === "dry_run") {
+      // 2026-10-28 honesty fix: a dry-run spawn does NOT have a pid and must
+      // not report healthy:true (the previous fabricated pid 45001 made
+      // receipts indistinguishable from live processes).
       const receipt: LlamaProcessReceipt = Object.freeze({
         instanceId: instance.id,
         operation: "spawn",
         mode: "dry_run",
-        pid: instance.pid ?? 45001,
+        pid: null,
         port: Number(instance.port),
         binaryPath: absBinary,
         commandLine,
-        healthy: true,
+        healthy: false,
       });
       this.receiptsHistory.push(receipt);
       return Result.ok(receipt);

@@ -58,18 +58,25 @@ export class MultiAgentSdkBridgeAdapter implements AgentSdkBridgePort {
               ? 16384
               : -1;
 
+    // Header contract aligned with the engine (2026-10-28): the server parses
+    // X-Cohort-ID + the X-Evidence-* family (server.cpp
+    // inject_request_headers/apply_ev_overrides); the old X-Llama-* names were
+    // never read by any engine. Planned per-request controls that the engine
+    // does not parse yet are kept under their legacy X-Llama-* names for
+    // forward compatibility and are documented as such.
     const commonHeaders: Readonly<Record<string, string>> = Object.freeze({
-      "X-Llama-Cohort": `cohort-${activeInstance.modelId}-${activeInstance.templateId}`,
-      "X-Llama-Capsule-Filter": resolvedSettings.capsule_filter ?? "fuse8_simhash64",
-      "X-Llama-Evidence-Strategy": evidenceStrategy,
-      "X-Llama-Evidence-Keep": evidenceKeep,
-      "X-Llama-Engine-Flavor": activeInstance.engineFlavor,
+      // parsed by the engine:
+      "X-Cohort-ID": `cohort-${activeInstance.modelId}-${activeInstance.templateId}`,
       "X-Evidence-Filter": evidenceFilterEnabled ? "true" : "false",
       "X-Evidence-Strategy": evidenceStrategy,
-      "X-Evidence-Top-K": "20",
       "X-Evidence-Chunk-Tokens": "128",
-      "X-Evidence-Symbol-Boost": "0.15",
-      "X-Evidence-Chunk-Expansion": "true",
+      "X-Evidence-Top-K": "20",
+      "X-Evidence-Symbol-Boost": "1.5",
+      "X-Evidence-Chunk-Expansion": "1",
+      // planned (not parsed yet):
+      "X-Llama-Capsule-Filter": resolvedSettings.capsule_filter ?? "fuse8_simhash64",
+      "X-Llama-Evidence-Keep-Ratio": evidenceKeep,
+      "X-Llama-Engine-Flavor": activeInstance.engineFlavor,
       "X-Llama-Thinking-Effort": thinkingEffort,
     });
 
@@ -78,7 +85,7 @@ export class MultiAgentSdkBridgeAdapter implements AgentSdkBridgePort {
       strategy: evidenceStrategy,
       chunk_tokens: 128,
       top_k: 20,
-      symbol_boost: 0.15,
+      symbol_boost: 1.5,
       chunk_expansion: true,
       capsule_filter: resolvedSettings.capsule_filter ?? "fuse8_simhash64",
     });
@@ -88,7 +95,7 @@ export class MultiAgentSdkBridgeAdapter implements AgentSdkBridgePort {
       evidence_strategy: evidenceStrategy,
       evidence_chunk_tokens: 128,
       evidence_top_k: 20,
-      evidence_symbol_boost: 0.15,
+      evidence_symbol_boost: 1.5,
       evidence_chunk_expansion: true,
       thinking_effort: thinkingEffort,
       reasoning_budget: reasoningBudget,
@@ -246,7 +253,7 @@ export class MultiAgentSdkBridgeAdapter implements AgentSdkBridgePort {
           "[model_providers.ik_llama]",
           'name = "ik_llama.cpp Local Capsule Engine"',
           `base_url = "${baseUrl}"`,
-          `http_headers = { "X-Llama-Cohort" = "${commonHeaders["X-Llama-Cohort"]}", "X-Llama-Capsule-Filter" = "${commonHeaders["X-Llama-Capsule-Filter"]}" }`,
+          `http_headers = { "X-Cohort-ID" = "${commonHeaders["X-Cohort-ID"]}", "X-Llama-Capsule-Filter" = "${commonHeaders["X-Llama-Capsule-Filter"]}" }`,
           "",
         ].join("\n");
         return Object.freeze({
