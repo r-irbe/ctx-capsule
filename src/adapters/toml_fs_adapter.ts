@@ -52,11 +52,16 @@ function toFileIoError(
 }
 
 export class FileSystemTomlConfigAdapter implements TomlConfigRepositoryPort {
-  private readonly workspaceRoot: string;
+  private workspaceRoot: string;
 
   constructor(options?: { readonly workspaceRoot?: string }) {
     this.workspaceRoot = options?.workspaceRoot ?? process.cwd();
-    Object.freeze(this);
+  }
+
+  setWorkspaceRoot(workspaceRoot: string): void {
+    if (workspaceRoot) {
+      this.workspaceRoot = workspaceRoot;
+    }
   }
 
   private resolveTarget(rawPath: string): string {

@@ -385,6 +385,12 @@ export function createCapsulePiExtension(
         mode,
       }),
     register: (pi: CapsulePiHostApi) => {
+      const syncWorkspaceRoot = (ctx?: CapsulePiExtensionContext): void => {
+        if (!options?.workspaceRoot && ctx?.cwd) {
+          runtime.tomlRepo.setWorkspaceRoot(ctx.cwd);
+        }
+      };
+
       const updateUiStatus = (ctx?: CapsulePiExtensionContext): void => {
         if (ctx?.hasUI && ctx.ui?.setStatus) {
           ctx.ui.setStatus("ctx-capsule", formatStatusBarLine(currentState));
@@ -392,6 +398,7 @@ export function createCapsulePiExtension(
       };
 
       pi.on("session_start", async (_event, ctx) => {
+        syncWorkspaceRoot(ctx);
         const savedRes = await runtime.tomlRepo.loadSavedTemplates(currentState.hierarchyRootDir);
         if (savedRes.isOk() && savedRes.value.length > 0) {
           const existingIds = new Set(currentState.templates.map((t) => t.id));
@@ -408,10 +415,12 @@ export function createCapsulePiExtension(
       });
 
       pi.on("turn_start", async (_event, ctx) => {
+        syncWorkspaceRoot(ctx);
         updateUiStatus(ctx);
       });
 
       pi.on("before_model_request", async (event, ctx) => {
+        syncWorkspaceRoot(ctx);
         const req = event as CapsuleModelRequestEnvelope;
         const headers = buildCapsuleRequestHeaders(currentState);
         const requestDefaults = buildCapsuleRequestDefaults(currentState);
@@ -451,6 +460,7 @@ export function createCapsulePiExtension(
             label: name,
           })),
         handler: async (args, ctx) => {
+          syncWorkspaceRoot(ctx);
           const trimmed = args.trim();
           const tokens = trimmed ? trimmed.split(/\s+/) : [];
           const sub = tokens[0] ?? "";
@@ -622,6 +632,7 @@ export function createCapsulePiExtension(
           required: ["action"],
         },
         execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
+          syncWorkspaceRoot(ctx);
           const action = String(params.action ?? "status");
           if (action === "preset" && typeof params.targetId === "string") {
             await controller.switchPreset(params.targetId);
