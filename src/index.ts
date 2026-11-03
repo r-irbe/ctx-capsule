@@ -18,7 +18,9 @@ export * from "./adapters/live_telemetry_adapter.ts";
 export * from "./adapters/agent_sdk_adapter.ts";
 export * from "./adapters/pto_adapter.ts";
 export * from "./adapters/effect_interpreter.ts";
+export * from "./adapters/terminal_diagram_generator.ts";
 export * from "./adapters/pi_tui_adapter.ts";
+export * from "./devtools/tui_playwright_harness.ts";
 export * from "./integrations/pi_sdk_extension.ts";
 export * from "./integrations/agent_bootstrap.ts";
 export * from "./mcp/ctx_capsule_mcp_server.ts";
@@ -51,6 +53,7 @@ import {
   parseBootstrapAgentsList,
   runAgentBootstrapInit,
 } from "./integrations/agent_bootstrap.ts";
+import { runComprehensiveTuiScreencastAndAudit } from "./devtools/tui_playwright_harness.ts";
 
 export interface CapsuleHexagonalRuntimeOptions {
   readonly workspaceRoot?: string;
@@ -149,6 +152,7 @@ export const CAPSULE_CLI_HELP = [
   "  ctx-capsule tune <key=val> [...]   set one or more runtime parameters (e.g. thinking_effort=high_analytical)",
   "  ctx-capsule pto [mode]             run Clang-21 IRPGO + ThinLTO + Machine Split & hot-swap to ik_llama_pto_lto",
   "  ctx-capsule export-toml            compile & write 5-layer hierarchical TOML + sync agent SDKs",
+  "  ctx-capsule screencast [out.cast]  run Playwright-for-TUI DevTools audit & record asciinema v2 .cast + HTML player",
   "  ctx-capsule telemetry              probe live /health, /slots, /metrics, nvidia-smi, and /proc/meminfo",
   "  ctx-capsule help                   print this command reference",
 ].join("\n");
@@ -442,6 +446,35 @@ export async function runCapsuleCli(options: CapsuleCliOptions): Promise<number>
     } else if (arg === "--sync-sdks") {
       await component.dispatchCommandAsync({ _tag: "SyncAllAgentSdks" });
       nonInteractiveActionTaken = true;
+    } else if (arg === "screencast" || arg === "devtools" || arg === "--screencast") {
+      const nextArg = args[i + 1];
+      const rawCastPath =
+        nextArg && !nextArg.startsWith("-")
+          ? args[++i]
+          : `${workspaceRoot}/tools/ctx-capsule/exports/ctx_capsule_full_screencast.cast`;
+      const castPath = rawCastPath.startsWith("/")
+        ? rawCastPath
+        : `${workspaceRoot}/${rawCastPath}`;
+      const htmlPath = castPath.replace(/\.cast$/i, "") + ".html";
+      const jsonPath = castPath.replace(/\.cast$/i, "") + ".audit.json";
+
+      const auditRes = await runComprehensiveTuiScreencastAndAudit({
+        component,
+        castOutputPath: castPath,
+        htmlOutputPath: htmlPath,
+        jsonReportPath: jsonPath,
+      });
+      if (auditRes.isErr()) {
+        out(`ERROR: ${DomainErrors.format(auditRes.error)}`);
+        return 1;
+      }
+      out(JSON.stringify(auditRes.value, null, 2));
+      return (
+        auditRes.value.geometryViolations.length === 0 &&
+        auditRes.value.explanationViolations.length === 0
+      )
+        ? 0
+        : 1;
     }
   }
 

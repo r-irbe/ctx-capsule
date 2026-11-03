@@ -130,9 +130,11 @@ export function createInitialControlState(options?: {
         entryHashHex: "a91f4c08e2b73104",
       },
     ]),
-    statusBanner: "READY: Pure TypeScript FOOP Hexagonal TUI | Click or press 1..7, m:Model, s:SaveTmpl, a:AddLlama, x:ReplaceLlama",
+    statusBanner: "READY: Pure TypeScript FOOP Hexagonal TUI | Click or press 1..7, m:Model, s:SaveTmpl, a:AddLlama, x:ReplaceLlama, ?:Help, v:Visual",
     hierarchyRootDir: Branded.unsafeFilePath(options?.hierarchyRootDir ?? "scripts/configs/hierarchy"),
     unifiedModelsTomlPath: Branded.unsafeFilePath(options?.unifiedModelsTomlPath ?? "scripts/configs/models.toml"),
+    showHelpModal: false,
+    visualDiagramMode: "auto",
   };
 
   const resolved = resolveHierarchicalSettings(baseState);
@@ -1063,6 +1065,34 @@ export function transition(
         ...state,
         settingsValues: Object.freeze(nextValues),
         statusBanner: `Reset category '${state.activeCategory}' to defaults`,
+      });
+      return Result.ok({ state: nextState, effects: [] });
+    }
+
+    case "ToggleHelpModal": {
+      const nextShow = !state.showHelpModal;
+      const nextState: CapsuleControlState = Object.freeze({
+        ...state,
+        showHelpModal: nextShow,
+        statusBanner: nextShow
+          ? "OPENED HELP & ARCHITECTURE GUIDE (Press ? or Esc to return to settings)"
+          : "Closed Help & Architecture Guide",
+      });
+      return Result.ok({ state: nextState, effects: [] });
+    }
+
+    case "ToggleVisualMode": {
+      const order: readonly ("auto" | "ascii_only" | "graphical_image")[] = [
+        "auto",
+        "graphical_image",
+        "ascii_only",
+      ];
+      const curIdx = order.indexOf(state.visualDiagramMode);
+      const nextMode = order[(curIdx + 1) % order.length];
+      const nextState: CapsuleControlState = Object.freeze({
+        ...state,
+        visualDiagramMode: nextMode,
+        statusBanner: `Switched Inspector Diagram Mode -> ${nextMode} (Kitty/Ghostty/iTerm2 PNG vs Unicode/ASCII)`,
       });
       return Result.ok({ state: nextState, effects: [] });
     }

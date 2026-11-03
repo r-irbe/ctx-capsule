@@ -3,6 +3,9 @@
  *
  * Registers:
  *   1. `/capsule` slash command (`status`, `preset <id>`, `model <id>`, `sync`, `pto`, `tui`, `tune`, `launch`, `stop`, `help`).
+ *      - When invoked as bare `/capsule` or `/capsule tui` inside Pi's interactive TUI (`ctx.ui.custom`),
+ *        mounts `CapsulePiTuiComponent` as a real interactive `@earendil-works/pi-tui` overlay modal (`{ overlay: true }`)
+ *        with live 2.5s hardware/server telemetry polling.
  *   2. `ctx_capsule` tool for agent-invoked status inspection, preset/model switching, and SimHash64/MaxSim context packing.
  *   3. `before_model_request`, `session_start`, and `turn_start` lifecycle hooks that inject:
  *      - `X-Llama-Cohort`
@@ -17,11 +20,19 @@
  *   4. `getStatusBarWidget()` and `formatStatusBarLine(state)` for the Pi TUI status bar.
  */
 
+import {
+  CapsulePiTuiComponent,
+  renderCompactCapsuleStatusCard,
+} from "../adapters/pi_tui_adapter.ts";
 import { packContextCapsules } from "../domain/evidence_packer.ts";
 import { createInitialControlState, transition } from "../domain/reducer.ts";
 import { Branded, DomainErrors } from "../domain/result.ts";
 import { buildLlamaServerCliArgs, resolveHierarchicalSettings } from "../domain/toml_hierarchy.ts";
-import type { CapsuleControlState, PtoMode } from "../domain/types.ts";
+import {
+  type CapsuleControlState,
+  type PtoMode,
+  SETTINGS_SCHEMA,
+} from "../domain/types.ts";
 import { CAPSULE_CLI_HELP, createCapsuleHexagonalRuntime, runCapsuleCli } from "../index.ts";
 
 export const CAPSULE_PI_SUBCOMMANDS = [
@@ -48,12 +59,32 @@ export interface CapsuleModelRequestEnvelope {
   [key: string]: unknown;
 }
 
+export interface CapsulePiUiCustomComponent {
+  render(width: number): string[];
+  handleInput?(data: string): void;
+  invalidate(): void;
+  dispose?(): void;
+}
+
 export interface CapsulePiExtensionContext {
   readonly cwd: string;
+  readonly mode?: "tui" | "rpc" | "print";
   readonly hasUI?: boolean;
   readonly ui?: {
     notify(message: string, level?: "info" | "warning" | "error"): void;
-    setStatus?(key: string, text: string): void;
+    setStatus?(key: string, text: string | undefined): void;
+    custom?<T>(
+      factory: (
+        tui: { requestRender(): void },
+        theme: unknown,
+        keybindings: unknown,
+        done: (result: T) => void,
+      ) => CapsulePiUiCustomComponent | Promise<CapsulePiUiCustomComponent>,
+      options?: {
+        overlay?: boolean;
+        overlayOptions?: Record<string, unknown>;
+      },
+    ): Promise<T>;
   };
 }
 
@@ -186,7 +217,7 @@ export function createCapsulePiExtension(
 ): CapsulePiExtensionController {
   const runtime = createCapsuleHexagonalRuntime({
     workspaceRoot: options?.workspaceRoot ?? process.cwd(),
-    processMode: options?.processMode ?? "dry_run",
+    processMode: options?.processMode ?? "live",
   });
 
   let currentState = runtime.initialState;
@@ -221,6 +252,94 @@ export function createCapsulePiExtension(
       await runtime.interpreter.interpretEffects(res.value.effects, currentState);
     }
     return currentState;
+  };
+
+  const probeLiveTelemetry = async (): Promise<void> => {
+    const activeInst =
+      currentState.instances.find((i) => i.id === currentState.activeInstanceId) ??
+      currentState.instances[0];
+    const probeRes = await runtime.liveTelemetry.probeSystemTelemetry(
+      activeInst.host,
+      activeInst.port,
+      activeInst.pid,
+    );
+    if (probeRes.isOk()) {
+      const next = transition(currentState, {
+        _tag: "IngestLiveTelemetry",
+        telemetry: probeRes.value,
+      });
+      if (next.isOk()) {
+        currentState = next.value.state;
+      }
+    }
+  };
+
+  const mountInteractiveOverlay = async (
+    ctx: CapsulePiExtensionContext,
+  ): Promise<boolean> => {
+    if (!ctx.hasUI || !ctx.ui?.custom) {
+      return false;
+    }
+    const updatedState = await ctx.ui.custom<CapsuleControlState>(
+      (tui, _theme, _kb, done) => {
+        let pollTimer: ReturnType<typeof setInterval> | null = null;
+        const comp = new CapsulePiTuiComponent({
+          initialState: currentState,
+          interpreter: runtime.interpreter,
+          telemetry: runtime.telemetry,
+          onRequestRender: () => {
+            tui.requestRender();
+          },
+          onQuit: () => {
+            if (pollTimer) {
+              clearInterval(pollTimer);
+              pollTimer = null;
+            }
+            done(comp.getState());
+          },
+        });
+
+        const probeOnce = async (): Promise<void> => {
+          const st = comp.getState();
+          const inst =
+            st.instances.find((i) => i.id === st.activeInstanceId) ?? st.instances[0];
+          const res = await runtime.liveTelemetry.probeSystemTelemetry(
+            inst.host,
+            inst.port,
+            inst.pid,
+          );
+          if (res.isOk()) {
+            comp.dispatchCommand({
+              _tag: "IngestLiveTelemetry",
+              telemetry: res.value,
+            });
+          }
+        };
+
+        void probeOnce();
+        pollTimer = setInterval(() => {
+          void probeOnce();
+        }, 2500);
+
+        return {
+          render: (w: number) => comp.render(w),
+          handleInput: (data: string) => comp.handleInput(data),
+          invalidate: () => comp.invalidate(),
+          dispose: () => {
+            if (pollTimer) {
+              clearInterval(pollTimer);
+              pollTimer = null;
+            }
+          },
+        };
+      },
+      { overlay: true },
+    );
+
+    if (updatedState) {
+      currentState = updatedState;
+    }
+    return true;
   };
 
   const controller: CapsulePiExtensionController = {
@@ -325,7 +444,7 @@ export function createCapsulePiExtension(
 
       pi.registerCommand("capsule", {
         description:
-          "ctx-capsule control plane: status | preset <id> | model <id> | sync | pto | tui | tune | help",
+          "ctx-capsule control plane: status | tui | launch | stop | preset <id> | model <id> | tune | pto | sync | help",
         getArgumentCompletions: (prefix: string) =>
           CAPSULE_PI_SUBCOMMANDS.filter((name) => name.startsWith(prefix)).map((name) => ({
             value: name,
@@ -333,25 +452,118 @@ export function createCapsulePiExtension(
           })),
         handler: async (args, ctx) => {
           const trimmed = args.trim();
-          const tokens = trimmed ? trimmed.split(/\s+/) : ["status"];
-          const sub = tokens[0];
+          const tokens = trimmed ? trimmed.split(/\s+/) : [];
+          const sub = tokens[0] ?? "";
 
           if (sub === "help" || sub === "--help" || sub === "-h") {
             if (ctx.hasUI && ctx.ui) ctx.ui.notify(CAPSULE_CLI_HELP, "info");
             return;
           }
 
+          // Bare `/capsule` or `/capsule tui` mounts the interactive @earendil-works/pi-tui overlay modal
+          if (sub === "" || sub === "tui") {
+            const mounted = await mountInteractiveOverlay(ctx);
+            updateUiStatus(ctx);
+            if (mounted) {
+              if (ctx.hasUI && ctx.ui) {
+                ctx.ui.notify(renderCompactCapsuleStatusCard(currentState), "info");
+              }
+              return;
+            }
+          }
+
           try {
+            if (sub === "status" || sub === "") {
+              await probeLiveTelemetry();
+              updateUiStatus(ctx);
+              if (ctx.hasUI && ctx.ui) {
+                ctx.ui.notify(renderCompactCapsuleStatusCard(currentState), "info");
+              }
+              return;
+            }
             if (sub === "preset" && tokens[1]) {
               await controller.switchPreset(tokens[1]);
               await controller.syncAgents();
-            } else if (sub === "model" && tokens[1]) {
+              updateUiStatus(ctx);
+              if (ctx.hasUI && ctx.ui) {
+                ctx.ui.notify(renderCompactCapsuleStatusCard(currentState), "info");
+              }
+              return;
+            }
+            if (sub === "model" && tokens[1]) {
               await controller.switchModel(tokens[1]);
               await controller.syncAgents();
-            } else if (sub === "sync") {
+              updateUiStatus(ctx);
+              if (ctx.hasUI && ctx.ui) {
+                ctx.ui.notify(renderCompactCapsuleStatusCard(currentState), "info");
+              }
+              return;
+            }
+            if (sub === "tune") {
+              for (const kv of tokens.slice(1)) {
+                const eqIdx = kv.indexOf("=");
+                if (eqIdx > 0) {
+                  const k = kv.slice(0, eqIdx).trim();
+                  const v = kv.slice(eqIdx + 1).trim();
+                  if (SETTINGS_SCHEMA.some((s) => s.key === k)) {
+                    await applyDomainCommand({
+                      _tag: "SetSettingValue",
+                      key: k,
+                      value: v,
+                    });
+                  }
+                }
+              }
+              await applyDomainCommand({ _tag: "ExportHierarchicalToml" });
               await controller.syncAgents();
-            } else if (sub === "pto") {
+              updateUiStatus(ctx);
+              if (ctx.hasUI && ctx.ui) {
+                ctx.ui.notify(renderCompactCapsuleStatusCard(currentState), "info");
+              }
+              return;
+            }
+            if (sub === "launch") {
+              if (tokens[1]) {
+                await controller.switchModel(tokens[1]);
+              }
+              await applyDomainCommand({ _tag: "LaunchActiveInstance" });
+              await probeLiveTelemetry();
+              updateUiStatus(ctx);
+              if (ctx.hasUI && ctx.ui) {
+                ctx.ui.notify(renderCompactCapsuleStatusCard(currentState), "info");
+              }
+              return;
+            }
+            if (sub === "stop") {
+              const targetId = tokens[1]
+                ? Branded.unsafeInstanceId(tokens[1])
+                : currentState.activeInstanceId;
+              await applyDomainCommand({
+                _tag: "StopLlamaInstance",
+                instanceId: targetId,
+              });
+              updateUiStatus(ctx);
+              if (ctx.hasUI && ctx.ui) {
+                ctx.ui.notify(renderCompactCapsuleStatusCard(currentState), "info");
+              }
+              return;
+            }
+            if (sub === "sync" || sub === "export-toml") {
+              await applyDomainCommand({ _tag: "ExportHierarchicalToml" });
+              await controller.syncAgents();
+              updateUiStatus(ctx);
+              if (ctx.hasUI && ctx.ui) {
+                ctx.ui.notify(renderCompactCapsuleStatusCard(currentState), "info");
+              }
+              return;
+            }
+            if (sub === "pto") {
               await controller.runPto(tokens[1] as PtoMode | undefined);
+              updateUiStatus(ctx);
+              if (ctx.hasUI && ctx.ui) {
+                ctx.ui.notify(renderCompactCapsuleStatusCard(currentState), "info");
+              }
+              return;
             }
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -359,16 +571,9 @@ export function createCapsulePiExtension(
             return;
           }
 
-          const cliArgv =
-            sub === "model" && tokens[1]
-              ? ["--switch-model", tokens[1], "--render-once"]
-              : sub === "sync"
-                ? ["--sync-sdks", "--render-once"]
-                : tokens;
-
           const lines: string[] = [];
           const code = await runCapsuleCli({
-            argv: cliArgv,
+            argv: tokens.length > 0 ? tokens : ["status"],
             workspaceRoot: ctx.cwd || options?.workspaceRoot || process.cwd(),
             stdout: (line) => lines.push(line),
           });
@@ -376,7 +581,7 @@ export function createCapsulePiExtension(
           const output = lines.join("\n");
           if (ctx.hasUI && ctx.ui) {
             ctx.ui.notify(
-              output || formatStatusBarLine(currentState),
+              output || renderCompactCapsuleStatusCard(currentState),
               code === 0 ? "info" : "error",
             );
           }

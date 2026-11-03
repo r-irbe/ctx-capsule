@@ -1,27 +1,39 @@
 /**
  * Inbound + Outbound Interactive TUI Adapter built on `@earendil-works/pi-tui`.
  *
- * Implements `Component` from `@earendil-works/pi-tui` with full **Mouse + Keyboard**
- * interactivity, zero clipping at 136 columns, and pure FOOP `DomainCommand` dispatch:
- *   - Top bar: Context & Fleet state visualization + VRAM/RAM/Capsule bar +
- *     clickable category tabs `1..7` + clickable action buttons:
- *     `[Switch Model (m)]`, `[Save Template (s)]`, `[+ Add llama.cpp (a)]`,
- *     `[Replace In-Place (x)]`, `[Sync 7 SDKs & TOML (e)]`.
- *   - Left column: Interactive settings list (click row to select, click `<` or `>`
- *     to cycle values, mouse wheel to scroll).
- *   - Right column: Contextual ASCII art diagram, Impact, Pros/Cons, Fit recommendation,
- *     live Fleet table, and live Telemetry span tail.
+ * Implements `Component` from `@earendil-works/pi-tui` using the native widget
+ * layout system (`VStack`, `HStack`, `Box`, `SettingsList`, `Text`, `TruncatedText`)
+ * and native ANSI/RGB styling (`styleText`, `indexedColor`) with:
+ *   - Full **Mouse + Keyboard** interactivity
+ *   - Responsive layout: side-by-side `HStack` at `>= 106` columns (default 136),
+ *     or stacked `VStack` at `< 106` columns (down to 78 columns for Pi overlay modals)
+ *   - Rounded Unicode borders (`\u256D\u2500\u256E\u2502\u2570\u256F\u251C\u2524`) with 7-bit ASCII source (`INV-001`)
+ *   - Live per-option AND per-variant explanation callouts (`ACTIVE VARIANT [< value >]`)
+ *   - Native `@earendil-works/pi-tui` `Image` (Kitty/Ghostty APC + iTerm2 OSC) inline PNG diagram support (`v`)
+ *   - Comprehensive Help, Architecture & Keyboard/Mouse Reference Modal (`?`)
+ *   - Pure FOOP `DomainCommand` dispatch
  */
 
 import {
+  Box,
   type Component,
+  HStack,
+  indexedColor,
   Key,
   matchesKey,
   MouseRegion,
   ProcessTerminal,
+  type SettingItem,
+  SettingsList,
+  type SettingsListTheme,
+  styleText,
+  Text,
+  TruncatedText,
   TuiAltScreen,
   type TuiMouseEvent,
   type TuiMouseEventResult,
+  truncateToWidth,
+  VStack,
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import {
@@ -32,11 +44,14 @@ import {
   transition,
 } from "../domain/reducer.ts";
 import { Branded, DomainErrors } from "../domain/result.ts";
+import { resolveHierarchicalSettings } from "../domain/toml_hierarchy.ts";
 import {
   type CapsuleControlState,
   CATEGORIES,
+  type CategoryId,
   type DomainCommand,
   type MouseHitRegion,
+  type SettingOptionSpec,
 } from "../domain/types.ts";
 import type {
   CapsuleTelemetryPort,
@@ -44,9 +59,45 @@ import type {
   EffectInterpreterPort,
   LiveTelemetryProbePort,
 } from "../ports/outbound.ts";
+import {
+  createCategoryPiTuiImage,
+  getCategoryDiagramAsset,
+  resolveActiveImageProtocol,
+} from "./terminal_diagram_generator.ts";
 
 const DEFAULT_WIDTH = 136;
+const MIN_WIDTH = 78;
+const STACKED_BREAKPOINT = 106;
 const LEFT_COL_INNER = 54;
+
+const B_TL = "\u256D"; // top-left rounded corner
+const B_TR = "\u256E"; // top-right rounded corner
+const B_BL = "\u2570"; // bottom-left rounded corner
+const B_BR = "\u256F"; // bottom-right rounded corner
+const B_H = "\u2500"; // horizontal bar
+const B_V = "\u2502"; // vertical bar
+const B_LT = "\u251C"; // left tee
+const B_RT = "\u2524"; // right tee
+const BLK_FULL = "\u2588"; // full block
+const BLK_LIGHT = "\u2591"; // light shade block
+const BULLET = "\u25CF"; // solid bullet
+
+const COLOR_MODE = "256color" as const;
+const fgCyan = (s: string): string => styleText(s, { fg: indexedColor(81), bold: true }, COLOR_MODE);
+const fgGreen = (s: string): string => styleText(s, { fg: indexedColor(114), bold: true }, COLOR_MODE);
+const fgYellow = (s: string): string => styleText(s, { fg: indexedColor(221), bold: true }, COLOR_MODE);
+const fgRed = (s: string): string => styleText(s, { fg: indexedColor(203), bold: true }, COLOR_MODE);
+const fgMagenta = (s: string): string => styleText(s, { fg: indexedColor(177), bold: true }, COLOR_MODE);
+const fgWhiteBold = (s: string): string => styleText(s, { fg: indexedColor(255), bold: true }, COLOR_MODE);
+const fgMuted = (s: string): string => styleText(s, { fg: indexedColor(246) }, COLOR_MODE);
+const fgDim = (s: string): string => styleText(s, { fg: indexedColor(242) }, COLOR_MODE);
+const bgActiveTab = (s: string): string =>
+  styleText(s, { fg: indexedColor(232), bg: indexedColor(81), bold: true }, COLOR_MODE);
+const bgActiveRow = (s: string): string =>
+  styleText(s, { fg: indexedColor(255), bg: indexedColor(237), bold: true }, COLOR_MODE);
+const bgButton = (s: string): string =>
+  styleText(s, { fg: indexedColor(252), bg: indexedColor(236) }, COLOR_MODE);
+const borderTone = (s: string): string => styleText(s, { fg: indexedColor(67) }, COLOR_MODE);
 
 function padOrTruncate(text: string, targetWidth: number): string {
   const vis = visibleWidth(text);
@@ -56,10 +107,7 @@ function padOrTruncate(text: string, targetWidth: number): string {
   if (vis < targetWidth) {
     return text + " ".repeat(targetWidth - vis);
   }
-  if (targetWidth <= 3) {
-    return text.slice(0, targetWidth);
-  }
-  return text.slice(0, targetWidth - 3) + "...";
+  return truncateToWidth(text, targetWidth);
 }
 
 function wrapTextToWidth(text: string, maxWidth: number): readonly string[] {
@@ -71,7 +119,7 @@ function wrapTextToWidth(text: string, maxWidth: number): readonly string[] {
   let current = words[0];
   for (let i = 1; i < words.length; i++) {
     const candidate = `${current} ${words[i]}`;
-    if (candidate.length <= maxWidth) {
+    if (visibleWidth(candidate) <= maxWidth) {
       current = candidate;
     } else {
       lines.push(current);
@@ -82,14 +130,194 @@ function wrapTextToWidth(text: string, maxWidth: number): readonly string[] {
   return lines;
 }
 
+class FixedLinesWidget implements Component {
+  private readonly lines: readonly string[];
+
+  constructor(lines: readonly string[]) {
+    this.lines = lines;
+  }
+
+  render(width: number): string[] {
+    return this.lines.map((line) => padOrTruncate(line, width));
+  }
+
+  invalidate(): void {}
+}
+
+function createPiTuiSettingsListTheme(): SettingsListTheme {
+  return {
+    label: (text: string, selected: boolean) =>
+      selected ? fgCyan(text) : styleText(text, { fg: indexedColor(252) }, COLOR_MODE),
+    value: (text: string, selected: boolean) =>
+      selected ? fgYellow(`< ${text} >`) : fgMuted(`< ${text} >`),
+    description: (text: string) => fgDim(text),
+    cursor: fgCyan("> "),
+    hint: (text: string) => fgDim(text),
+  };
+}
+
+/**
+ * Builds a native `@earendil-works/pi-tui` `SettingsList` widget for the active category.
+ */
+export function createCategorySettingsListWidget(
+  state: CapsuleControlState,
+  onSelectValue?: (key: string, nextValue: string) => void,
+  onClose?: () => void,
+): SettingsList {
+  const catSettings = getSettingsForCategory(state.activeCategory);
+  const items: SettingItem[] = catSettings.map((opt) => ({
+    id: opt.key,
+    label: `${opt.label} (${opt.cliFlag})`,
+    description: `${opt.impact} [Env: ${opt.envVar}]`,
+    currentValue: state.settingsValues[opt.key] ?? opt.defaultValue,
+    values: [...opt.choices],
+  }));
+
+  return new SettingsList(
+    items,
+    Math.min(12, Math.max(6, items.length + 2)),
+    createPiTuiSettingsListTheme(),
+    (id, newValue) => {
+      onSelectValue?.(id, newValue);
+    },
+    () => {
+      onClose?.();
+    },
+  );
+}
+
+/**
+ * Renders the native `@earendil-works/pi-tui` `Image` lines for a category's
+ * PNG architectural schematic when terminal image capabilities (`kitty` or `iterm2`)
+ * are enabled.
+ */
+export function renderCategoryGraphicalPreview(
+  category: CategoryId,
+  width = 48,
+): {
+  readonly protocol: "kitty" | "iterm2" | null;
+  readonly assetTitle: string;
+  readonly imageId: number;
+  readonly lines: readonly string[];
+} {
+  const asset = getCategoryDiagramAsset(category);
+  const protocol = resolveActiveImageProtocol("graphical_image");
+  const clampedWidth = Math.max(24, Math.min(64, width));
+  const img = createCategoryPiTuiImage(category, clampedWidth, 8);
+  const lines = img.render(clampedWidth);
+  return Object.freeze({
+    protocol,
+    assetTitle: asset.title,
+    imageId: asset.imageId,
+    lines: Object.freeze(lines),
+  });
+}
+
+/**
+ * Renders a compact 6-line status card suitable for `ctx.ui.notify(...)` in Pi
+ * without flooding the chat transcript with a 35-line full TUI frame.
+ */
+export function renderCompactCapsuleStatusCard(state: CapsuleControlState): string {
+  const activeModel =
+    state.models.find((m) => m.id === state.activeModelId) ?? state.models[0];
+  const activeInst =
+    state.instances.find((i) => i.id === state.activeInstanceId) ?? state.instances[0];
+  const resolved = resolveHierarchicalSettings(state);
+  const sys = state.systemTelemetry;
+  const statusTag = sys.serverOnline
+    ? `ONLINE (PID ${sys.pid ?? activeInst.pid ?? "-"}, ${sys.prefillTokPerSec.toFixed(0)} pf / ${sys.decodeTokPerSec.toFixed(1)} dec tok/s)`
+    : "OFFLINE (run /capsule launch or press g in /capsule tui)";
+
+  return [
+    `ctx-capsule | ${activeModel.displayName} (${activeModel.quantization}) | ${statusTag}`,
+    `Preset: ${state.activeTemplateId} | Port: ${activeInst.host}:${activeInst.port} | Engine: ${activeInst.engineFlavor}`,
+    `Context: ${resolved.ctx_size ?? "524288"} tok | Slots: -np ${resolved.parallel_slots ?? "1"} | KV: -ctk ${resolved.kv_type_k ?? "q8_0"} -ctv ${resolved.kv_type_v ?? "q8_0"} -ictk ${resolved.indexer_cache_type_k ?? "q8_0"}`,
+    `Capsules: ${resolved.capsule_filter ?? "fuse8_simhash64"} (${resolved.evidence_strategy ?? "code_pinpoint"}, top_k=${resolved.evidence_top_k ?? "16"}, boost=${resolved.evidence_symbol_boost ?? "3.5"})`,
+    `Speculative: ${resolved.spec_type ?? "ngram-mod_plus_dspark"} (autotune=${resolved.spec_autotune ?? "on"}) | Effort: ${resolved.thinking_effort ?? "max_deep_think"}`,
+    `Tip: Run /capsule (or /capsule tui) to open the interactive modal, '?' for Help, 'v' for Graphical PNG mode.`,
+  ].join("\n");
+}
+
 export interface FrameRenderSnapshot {
   readonly lines: readonly string[];
   readonly mouseRegions: readonly MouseHitRegion[];
   readonly width: number;
 }
 
+function renderHelpModalFrame(
+  state: CapsuleControlState,
+  width: number,
+  topRowIndex: number,
+  mouseRegions: MouseHitRegion[],
+): readonly string[] {
+  const innerWidth = width - 4;
+  const proto = resolveActiveImageProtocol(state.visualDiagramMode);
+  const asset = getCategoryDiagramAsset(state.activeCategory);
+
+  const closeBtnPlain = "[ Close Help (? / Esc) ]";
+  const visualBtnPlain = `[ Cycle Diagram Mode (v): ${state.visualDiagramMode.toUpperCase()} ]`;
+  const headerPrefix = "HELP, ARCHITECTURE & INTERACTIVE CONTROLS GUIDE  ";
+  const closeX0 = 2 + headerPrefix.length;
+  mouseRegions.push({
+    id: "help:close",
+    x0: closeX0,
+    y0: topRowIndex + 1,
+    x1: closeX0 + closeBtnPlain.length - 1,
+    y1: topRowIndex + 1,
+    command: { _tag: "ToggleHelpModal" },
+    tooltip: "Close the Help & Architecture overlay (? or Esc)",
+  });
+  const visX0 = closeX0 + closeBtnPlain.length + 2;
+  mouseRegions.push({
+    id: "help:visual_mode",
+    x0: visX0,
+    y0: topRowIndex + 1,
+    x1: visX0 + visualBtnPlain.length - 1,
+    y1: topRowIndex + 1,
+    command: { _tag: "ToggleVisualMode" },
+    tooltip: "Cycle terminal diagram mode (auto / graphical_image / ascii_only)",
+  });
+
+  const helpRows: string[] = [
+    `${fgCyan("HELP, ARCHITECTURE & INTERACTIVE CONTROLS GUIDE")}  ${bgActiveTab(closeBtnPlain)}  ${bgButton(visualBtnPlain)}`,
+    fgMuted(B_H.repeat(innerWidth)),
+    `${fgYellow("1. KEYBOARD NAVIGATION & LIVE ACTIONS (100% Non-Vacuous Hexagonal Dispatch):")}`,
+    `   ${fgWhiteBold("1..7 / Tab")}     Switch across the 7 architectural configuration categories (37 total parameters, ~145 variants)`,
+    `   ${fgWhiteBold("Up/Down / j/k")}  Select parameter row in the Left Pane; Inspector immediately updates explanations & diagrams`,
+    `   ${fgWhiteBold("Left/Right/Space")} Cycle the selected parameter's variant and view its live ${fgGreen("ACTIVE VARIANT")} explanation`,
+    `   ${fgWhiteBold("Enter / g")}      Launch or restart the active ${fgCyan("llama-server")} instance with compiled 5-layer CLI flags`,
+    `   ${fgWhiteBold("m / t / s")}      ${fgWhiteBold("m")}: Cycle Model Checkpoint | ${fgWhiteBold("t")}: Cycle Preset Template | ${fgWhiteBold("s")}: Save custom TOML preset`,
+    `   ${fgWhiteBold("a / x / p")}      ${fgWhiteBold("a")}: Add parallel fleet node | ${fgWhiteBold("x")}: Hot-swap engine flavor | ${fgWhiteBold("p")}: Run Clang-21 IRPGO+ThinLTO PTO`,
+    `   ${fgWhiteBold("e / r / v / ?")}  ${fgWhiteBold("e")}: Sync 8 Coding Agent SDKs & TOMLs | ${fgWhiteBold("r")}: Reset category defaults | ${fgWhiteBold("v")}: Diagram mode | ${fgWhiteBold("?")}: Toggle Help`,
+    fgMuted(B_H.repeat(innerWidth)),
+    `${fgYellow("2. ALL 7 ARCHITECTURAL CATEGORIES & WHAT THEY CONTROL:")}`,
+    `   ${fgCyan("[1] Models & Presets")}  Backbone checkpoint, 5-layer preset template, Engram sidecar mode, and GGUF-X 2MiB alignment`,
+    `   ${fgCyan("[2] llama.cpp Fleet")}   Engine binary flavor (ik_llama_pto_lto / upstream / worktree), HTTP port, NUMA node, in-place policy`,
+    `   ${fgCyan("[3] Capsules & RAG")}    Binary Fuse8/16 + SimHash64 O(1) filter, Late-Interaction MaxSim Exact-Cover, symbol boost, top-K`,
+    `   ${fgCyan("[4] KV & Paging")}       Context length (64K..1M), MLA-2/3, FlashAttn, -ctk/-ctv/-ictk quant, ZDD zero-page skip, SWA ring`,
+    `   ${fgCyan("[5] Speculative")}       Multi-stage DSpark + N-Gram + TreeGraft, Not-a-Bandit counterfactual Thompson tuner, ConcurrencyKnee`,
+    `   ${fgCyan("[6] Hardware & NUMA")}   EPYC 7453 NPS4 expert split, 56-thread Zen3 pinning, RTX 4090 L2 residency, Clang-21 Continuous IRPGO`,
+    `   ${fgCyan("[7] Sampling & SDKs")}   Deep thinking effort budget, temperature, dry-multiplier, XGrammar, and 8-agent SDK synchronization`,
+    fgMuted(B_H.repeat(innerWidth)),
+    `${fgYellow("3. INLINE TERMINAL GRAPHICS (Ghostty / Kitty / WezTerm / iTerm2 / Pi TUI):")}`,
+    `   Current Diagram Mode: ${fgGreen(state.visualDiagramMode.toUpperCase())} | Detected Terminal Protocol: ${fgCyan(proto ?? "unicode_box_drawing_fallback")}`,
+    `   Active Category PNG Asset: ${fgWhiteBold(asset.title)} (${asset.dimensions.widthPx}x${asset.dimensions.heightPx} RGBA PNG, ID #${asset.imageId}, ${asset.base64Png.length} B base64)`,
+    `   In Ghostty/Kitty/Pi TUI, pressing ${fgWhiteBold("v")} cycles ${fgCyan("AUTO -> GRAPHICAL_IMAGE -> ASCII_ONLY")} using @earendil-works/pi-tui Image.`,
+    fgMuted(B_H.repeat(innerWidth)),
+    `${fgYellow("4. FIVE-LAYER HIERARCHICAL TOML PRECEDENCE:")}`,
+    `   ${fgMuted("Layer 1:")} 00-defaults.toml -> ${fgMuted("Layer 2:")} hardware/epyc_milan_rtx4090.toml -> ${fgMuted("Layer 3:")} models/<id>.toml -> ${fgMuted("Layer 4:")} presets/<id>.toml -> ${fgMuted("Layer 5:")} runtime/session.toml`,
+  ];
+
+  const framed: string[] = [];
+  for (const row of helpRows) {
+    framed.push(`${borderTone(B_V)} ${padOrTruncate(row, innerWidth)} ${borderTone(B_V)}`);
+  }
+  return framed;
+}
+
 /**
- * Pure frame layout & hit-region compiler.
+ * Pure frame layout & hit-region compiler built on `@earendil-works/pi-tui`
+ * layout primitives (`VStack`, `HStack`, `Box`, `Text`, `TruncatedText`).
  * Produces exact `width`-column lines and a deterministic coordinate table of
  * `MouseHitRegion[]` for mouse click/wheel dispatch.
  */
@@ -97,318 +325,450 @@ export function renderCapsuleFrameSnapshot(
   state: CapsuleControlState,
   requestedWidth = DEFAULT_WIDTH,
 ): FrameRenderSnapshot {
-  const width = Math.max(100, requestedWidth);
+  const width = Math.max(MIN_WIDTH, requestedWidth);
   const innerWidth = width - 4;
-  const leftWidth = Math.min(LEFT_COL_INNER, Math.floor(innerWidth * 0.42));
-  const rightWidth = innerWidth - leftWidth - 3;
+  const isStacked = width < STACKED_BREAKPOINT;
+  const leftInner = isStacked ? innerWidth : LEFT_COL_INNER;
+  const rightInner = isStacked ? innerWidth : width - LEFT_COL_INNER - 7;
 
-  const lines: string[] = [];
-  const regions: MouseHitRegion[] = [];
+  const mouseRegions: MouseHitRegion[] = [];
+  const topLines: string[] = [];
 
-  const pushBoxLine = (content: string): number => {
-    const rowIdx = lines.length;
-    lines.push(`| ${padOrTruncate(content, innerWidth)} |`);
-    return rowIdx;
+  const pushBorderTop = (): void => {
+    topLines.push(borderTone(`${B_TL}${B_H.repeat(width - 2)}${B_TR}`));
+  };
+  const pushBorderSep = (): void => {
+    topLines.push(borderTone(`${B_LT}${B_H.repeat(width - 2)}${B_RT}`));
+  };
+  const pushFullRow = (content: string): number => {
+    const rowIndex = topLines.length;
+    const body = padOrTruncate(content, innerWidth);
+    topLines.push(`${borderTone(B_V)} ${body} ${borderTone(B_V)}`);
+    return rowIndex;
   };
 
-  const pushDualColumnLine = (left: string, right: string): number => {
-    const rowIdx = lines.length;
-    const l = padOrTruncate(left, leftWidth);
-    const r = padOrTruncate(right, rightWidth);
-    lines.push(`| ${l} | ${r} |`);
-    return rowIdx;
-  };
-
-  const horizBorder = `+${"-".repeat(width - 2)}+`;
-  const splitBorder = `+${"-".repeat(leftWidth + 2)}+${"-".repeat(rightWidth + 2)}+`;
-
-  // Row 0: Top border
-  lines.push(horizBorder);
-
-  // Row 1: Header title with live server online/offline status
-  const activeModel = state.models.find((m) => m.id === state.activeModelId) ?? state.models[0];
-  const activeInst =
+  const activeModel =
+    state.models.find((m) => m.id === state.activeModelId) ?? state.models[0];
+  const activeTemplate =
+    state.templates.find((t) => t.id === state.activeTemplateId) ?? state.templates[0];
+  const activeInstance =
     state.instances.find((i) => i.id === state.activeInstanceId) ?? state.instances[0];
   const sys = state.systemTelemetry;
-  const isOnline = sys.serverOnline || activeInst.status === "healthy";
-  const effectivePid = sys.pid ?? activeInst.pid;
-  const srvBadge = isOnline
-    ? `ONLINE(PID:${effectivePid ?? "live"},${sys.decodeTokPerSec.toFixed(1)}t/s)`
-    : "SERVER OFFLINE (Press Enter/g to Launch)";
-  pushBoxLine(
-    `CTX-CAPSULE FOOP CONTROL PLANE | ${srvBadge} | Model: ${activeModel.id} | Preset: ${state.activeTemplateId}`,
-  );
+  const met = state.metrics;
 
-  // Row 2: Live Context & VRAM Tier Bar
-  const m = state.metrics;
-  const barWidth = 22;
-  const hotCells = Math.max(1, Math.round((m.activeHotVramTokens / Math.max(1, m.totalContextTokens)) * barWidth));
-  const warmCells = Math.max(1, Math.round((m.warmRamTokens / Math.max(1, m.totalContextTokens)) * barWidth));
-  const coldCells = Math.max(0, barWidth - hotCells - warmCells);
-  const tierBar = `[${"#".repeat(hotCells)}${"=".repeat(warmCells)}${".".repeat(coldCells)}]`;
-  const vramUsed = sys.vramTotalGiB > 0 ? sys.vramUsedGiB : m.kvVramUsedGiB;
-  const vramTotal = sys.vramTotalGiB > 0 ? sys.vramTotalGiB : m.kvVramBudgetGiB;
-  pushBoxLine(
-    `Ctx ${tierBar} ${(m.totalContextTokens / 1024).toFixed(0)}K | Hot:${(m.activeHotVramTokens / 1024).toFixed(0)}K Warm:${(m.warmRamTokens / 1024).toFixed(0)}K Caps:${m.evictedCapsulesCount} | GPU:${vramUsed.toFixed(1)}/${vramTotal.toFixed(0)}GiB(${sys.gpuUtilPct}%) RAM:${sys.hostRamUsedGiB.toFixed(0)}/${sys.hostRamTotalGiB.toFixed(0)}GiB`,
-  );
+  // Row 0: Top border
+  pushBorderTop();
+
+  const onlineBadge = sys.serverOnline
+    ? fgGreen(`[ONLINE PID:${sys.pid ?? activeInstance.pid ?? "LIVE"}]`)
+    : fgYellow("[OFFLINE - g:Launch]");
+  const titleText = new TruncatedText(
+    `${fgCyan(`${BULLET} CTX-CAPSULE CONTROL PLANE`)} ${fgMuted("|")} Model: ${fgWhiteBold(activeModel.id)} (${fgYellow(activeModel.quantization)}) ${fgMuted("|")} Preset: ${fgCyan(activeTemplate.id)} ${onlineBadge}`,
+    0,
+    0,
+  ).render(innerWidth)[0] ?? "";
+  pushFullRow(titleText);
+
+  // Row 2: Live Hardware & Capsule Telemetry Bar
+  const vramRatio = Math.min(1, Math.max(0, sys.vramUsedGiB / Math.max(1, sys.vramTotalGiB)));
+  const vramFilled = Math.max(1, Math.min(10, Math.round(vramRatio * 10)));
+  const vramBar = `${fgGreen(BLK_FULL.repeat(vramFilled))}${fgDim(BLK_LIGHT.repeat(10 - vramFilled))}`;
+  const teleLine = new TruncatedText(
+    `GPU:[${vramBar}] ${sys.vramUsedGiB.toFixed(1)}/${sys.vramTotalGiB.toFixed(0)}G (${sys.gpuUtilPct}%) | RAM:${sys.hostRamUsedGiB.toFixed(0)}/${sys.hostRamTotalGiB.toFixed(0)}G | HotKV:${fgCyan(`${Math.round(met.activeHotVramTokens / 1024)}K`)} Caps:${fgMagenta(`${met.evictedCapsulesCount} (${Math.round(met.coldCapsuleTokens / 1024)}K)`)} | Spec:${fgGreen(`${sys.specAcceptancePct.toFixed(0)}%`)} | ${sys.prefillTokPerSec.toFixed(0)}/${sys.decodeTokPerSec.toFixed(1)} tok/s`,
+    0,
+    0,
+  ).render(innerWidth)[0] ?? "";
+  pushFullRow(teleLine);
 
   // Row 3: Separator
-  lines.push(horizBorder);
+  pushBorderSep();
 
-  // Row 4: Clickable Category Tabs 1..7
-  let tabLine = "";
-  const tabRowIdx = lines.length;
+  // Row 4: Clickable Category Tabs (1..7)
+  const tabRowIndex = topLines.length;
+  let tabCursorX = 2;
+  const tabSegments: string[] = [];
   for (const cat of CATEGORIES) {
-    const isSelected = cat.id === state.activeCategory;
-    const token = isSelected ? `[ *${cat.shortLabel}* ]` : `[ ${cat.shortLabel} ]`;
-    const x0 = 2 + tabLine.length;
-    tabLine += token + " ";
-    const x1 = 2 + tabLine.length - 2;
-    regions.push(
-      Object.freeze({
-        id: `tab:${cat.id}`,
-        x0,
-        y0: tabRowIdx,
-        x1,
-        y1: tabRowIdx,
-        command: Object.freeze({ _tag: "SelectCategory", category: cat.id }),
-        tooltip: cat.fullTitle,
-      }),
-    );
+    const isSel = cat.id === state.activeCategory;
+    const plainSeg = isSel ? `[ ${cat.shortLabel} ]` : ` ${cat.shortLabel} `;
+    const segLen = plainSeg.length;
+    mouseRegions.push({
+      id: `tab:${cat.id}`,
+      x0: tabCursorX,
+      y0: tabRowIndex,
+      x1: tabCursorX + segLen - 1,
+      y1: tabRowIndex,
+      command: { _tag: "SelectCategory", category: cat.id },
+      tooltip: `Switch to category ${cat.index}: ${cat.fullTitle}`,
+    });
+    tabSegments.push(isSel ? bgActiveTab(plainSeg) : fgMuted(plainSeg));
+    tabCursorX += segLen + 1;
   }
-  pushBoxLine(tabLine);
+  pushFullRow(tabSegments.join(" "));
 
-  // Row 5: Clickable Action Bar (Launch, Switch Model, Cycle/Save Template, Add llama.cpp, Replace In-Place, PTO, Sync 7 SDKs)
-  const actionRowIdx = lines.length;
-  const actionSpecs: readonly {
+  // Row 5: Clickable Quick-Action Bar (includes [Visual(v)] and [Help(?)])
+  const actionRowIndex = topLines.length;
+  const actionDefs: ReadonlyArray<{
     readonly id: string;
     readonly label: string;
     readonly command: DomainCommand;
     readonly tooltip: string;
-  }[] = [
+    readonly highlight?: boolean;
+  }> = [
     {
-      id: "btn:launch_llama",
-      label: "[Launch(g)]",
-      command: Object.freeze({ _tag: "LaunchActiveInstance" }),
-      tooltip: "Launch active llama-server instance with current model & preset flags",
+      id: "act:launch",
+      label: sys.serverOnline ? "[Restart(Enter)]" : "[Launch(Enter/g)]",
+      command: { _tag: "LaunchActiveInstance" },
+      tooltip: "Launch or restart active llama-server instance with compiled 5-layer CLI flags",
+      highlight: !sys.serverOnline,
     },
     {
-      id: "btn:switch_model",
+      id: "act:switch_model",
       label: "[Model(m)]",
-      command: Object.freeze({ _tag: "CycleActiveModel", delta: 1 }),
+      command: { _tag: "CycleActiveModel", delta: 1 },
       tooltip: "Cycle active flagship model checkpoint",
     },
     {
-      id: "btn:cycle_template",
+      id: "act:cycle_template",
       label: "[Preset(t)]",
-      command: Object.freeze({ _tag: "CycleTemplate", delta: 1 }),
-      tooltip: "Cycle reusable configuration preset template",
+      command: { _tag: "CycleTemplate", delta: 1 },
+      tooltip: "Cycle active preset template",
     },
     {
-      id: "btn:save_template",
-      label: "[SaveTmpl(s)]",
-      command: Object.freeze({
+      id: "act:save_template",
+      label: "[Save(s)]",
+      command: {
         _tag: "SaveCurrentAsTemplate",
         templateId: Branded.unsafeTemplateId(`custom_${state.activeModelId}`),
-        displayName: `Custom ${state.activeModelId} Preset`,
-      }),
+        displayName: `Custom ${activeModel.displayName}`,
+      },
       tooltip: "Save current settings as a reusable TOML template",
     },
     {
-      id: "btn:add_llama",
-      label: "[+Add(a)]",
+      id: "act:add_instance",
+      label: "[+Node(a)]",
       command: buildNextAddInstanceCommand(state),
-      tooltip: "Spawn an additional llama-server instance on the next free port",
+      tooltip: "Add a parallel llama-server fleet node",
     },
     {
-      id: "btn:replace_llama",
-      label: "[Replace(x)]",
+      id: "act:replace_inplace",
+      label: "[Swap(x)]",
       command: buildNextReplaceInstanceCommand(state),
-      tooltip: "Hot-replace active llama-server binary/flavor in-place",
+      tooltip: "Hot-swap active instance engine flavor in-place",
     },
     {
       id: "act:pto_tune",
       label: "[PTO Tune & Swap (p)]",
-      command: Object.freeze({ _tag: "TriggerPtoTraceAndOptimize" }),
-      tooltip: "Run Clang-21 IRPGO + ThinLTO + Machine Split & hot-swap to ik_llama_pto_lto",
+      command: { _tag: "TriggerPtoTraceAndOptimize" },
+      tooltip: "Run Clang-21 Continuous IRPGO + ThinLTO binary optimization",
     },
     {
-      id: "btn:sync_sdks",
-      label: "[Sync 7 SDKs&TOML(e)]",
-      command: Object.freeze({ _tag: "SyncAllAgentSdks" }),
-      tooltip: "Export 5-layer TOML hierarchy & synchronize all 7 coding agent SDKs",
+      id: "act:sync_sdks",
+      label: "[Sync(e)]",
+      command: { _tag: "SyncAllAgentSdks" },
+      tooltip: "Synchronize 8 coding agent SDK configs and 5-layer TOMLs",
+    },
+    {
+      id: "btn:visual_mode",
+      label: "[Visual(v)]",
+      command: { _tag: "ToggleVisualMode" },
+      tooltip: "Toggle inline terminal diagram mode (auto / graphical_image / ascii_only)",
+    },
+    {
+      id: "btn:help_modal",
+      label: "[Help(?)]",
+      command: { _tag: "ToggleHelpModal" },
+      tooltip: "Open Help, Architecture & Controls reference modal (?)",
+      highlight: state.showHelpModal,
     },
   ];
 
-  let actionLine = "";
-  for (const act of actionSpecs) {
-    const x0 = 2 + actionLine.length;
-    actionLine += act.label + " ";
-    const x1 = 2 + actionLine.length - 2;
-    regions.push(
-      Object.freeze({
-        id: act.id,
-        x0,
-        y0: actionRowIdx,
-        x1,
-        y1: actionRowIdx,
-        command: act.command,
-        tooltip: act.tooltip,
-      }),
-    );
+  let actCursorX = 2;
+  const actParts: string[] = [];
+  for (const btn of actionDefs) {
+    const len = btn.label.length;
+    if (actCursorX + len - 2 <= innerWidth) {
+      mouseRegions.push({
+        id: btn.id,
+        x0: actCursorX,
+        y0: actionRowIndex,
+        x1: actCursorX + len - 1,
+        y1: actionRowIndex,
+        command: btn.command,
+        tooltip: btn.tooltip,
+      });
+      actParts.push(btn.highlight ? fgGreen(btn.label) : bgButton(btn.label));
+      actCursorX += len + 1;
+    }
   }
-  pushBoxLine(actionLine);
+  pushFullRow(actParts.join(" "));
 
-  // Row 6: Split column header border
-  lines.push(splitBorder);
+  // Row 6: Separator before body
+  pushBorderSep();
 
-  // Build Left Column rows (Interactive Settings for active category + Fleet summary)
-  const catMeta = CATEGORIES.find((c) => c.id === state.activeCategory) ?? CATEGORIES[0];
+  // If Help Modal is open, render the full-width interactive Help & Architecture Overlay
+  if (state.showHelpModal) {
+    const helpLines = renderHelpModalFrame(state, width, topLines.length, mouseRegions);
+    const footerLines: string[] = [
+      borderTone(`${B_LT}${B_H.repeat(width - 2)}${B_RT}`),
+      `${borderTone(B_V)} ${padOrTruncate(
+        `${fgGreen("STATUS:")} ${state.statusBanner} ${fgMuted("|")}TOML: ${fgCyan(state.hierarchyRootDir)}`,
+        innerWidth,
+      )} ${borderTone(B_V)}`,
+      `${borderTone(B_V)} ${padOrTruncate(
+        `${fgCyan("KEYS:")} ?/Esc:Close Help | v:Diagram Mode | 1-7/Tab:Category | Up/Down:Select | Left/Right:Value | q:Quit`,
+        innerWidth,
+      )} ${borderTone(B_V)}`,
+      borderTone(`${B_BL}${B_H.repeat(width - 2)}${B_BR}`),
+    ];
+
+    const rootVStack = new VStack(
+      [new FixedLinesWidget(topLines), new FixedLinesWidget(helpLines), new FixedLinesWidget(footerLines)],
+      { gap: 0 },
+    );
+    const renderedLines = rootVStack.render(width).map((line) => padOrTruncate(line, width));
+    return Object.freeze({
+      lines: Object.freeze(renderedLines),
+      mouseRegions: Object.freeze(mouseRegions),
+      width,
+    });
+  }
+
+  // Build Left Column (Settings List) and Right Column (Inspector + Active Variant + Diagram + Fleet)
   const catSettings = getSettingsForCategory(state.activeCategory);
-  const selectedRow = state.selectedRowByCategory[state.activeCategory] ?? 0;
-  const activeOption = catSettings[selectedRow] ?? catSettings[0];
+  const selectedRowIdx = state.selectedRowByCategory[state.activeCategory] ?? 0;
+  const activeOption: SettingOptionSpec = catSettings[selectedRowIdx] ?? catSettings[0];
+  const catMeta = CATEGORIES.find((c) => c.id === state.activeCategory) ?? CATEGORIES[0];
+  const activeVal = state.settingsValues[activeOption.key] ?? activeOption.defaultValue;
 
-  const leftRows: {
-    readonly text: string;
-    readonly rowIndex?: number;
-    readonly prevX0?: number;
-    readonly prevX1?: number;
-    readonly nextX0?: number;
-    readonly nextX1?: number;
-  }[] = [];
+  const leftColLines: string[] = [];
+  leftColLines.push(
+    padOrTruncate(
+      fgCyan(`CATEGORY ${catMeta.index}: ${catMeta.shortLabel} (${catSettings.length} params)`),
+      leftInner,
+    ),
+  );
+  leftColLines.push(fgMuted(B_H.repeat(leftInner)));
 
-  leftRows.push({ text: `CATEGORY ${catMeta.index}: ${catMeta.shortLabel} (${catSettings.length} params)` });
-  leftRows.push({ text: "-".repeat(leftWidth) });
+  const bodyStartRowIndex = topLines.length;
+  for (let idx = 0; idx < catSettings.length; idx++) {
+    const opt = catSettings[idx];
+    const isRowSel = idx === selectedRowIdx;
+    const curVal = state.settingsValues[opt.key] ?? opt.defaultValue;
+    const prefix = isRowSel ? "> " : "  ";
+    const valueToken = `[< ${curVal} >]`;
+    const maxLabelWidth = Math.max(12, leftInner - prefix.length - valueToken.length - 1);
+    const labelPadded = padOrTruncate(opt.label, maxLabelWidth);
+    const styledRow = isRowSel
+      ? bgActiveRow(`${prefix}${labelPadded} ${valueToken}`)
+      : `${fgMuted(prefix)}${styleText(labelPadded, { fg: indexedColor(252) }, COLOR_MODE)} ${fgYellow(valueToken)}`;
 
-  for (let i = 0; i < catSettings.length; i++) {
-    const opt = catSettings[i];
-    const isSel = i === selectedRow;
-    const prefix = isSel ? ">> " : "   ";
-    const val = state.settingsValues[opt.key] ?? opt.defaultValue;
-    const valBlock = `[< ${val} >]`;
-    const maxLabelLen = Math.max(10, leftWidth - prefix.length - valBlock.length - 1);
-    const labelStr = padOrTruncate(opt.label, maxLabelLen);
-    const rowText = `${prefix}${labelStr} ${valBlock}`;
-    const bracketStart = 2 + prefix.length + labelStr.length + 1;
-    leftRows.push({
-      text: rowText,
-      rowIndex: i,
-      prevX0: bracketStart,
-      prevX1: bracketStart + 2,
-      nextX0: bracketStart + valBlock.length - 3,
-      nextX1: bracketStart + valBlock.length - 1,
+    const rowY = bodyStartRowIndex + leftColLines.length;
+    const valStartX = 2 + prefix.length + maxLabelWidth + 1;
+    const valEndX = valStartX + valueToken.length - 1;
+    const valMidX = Math.floor((valStartX + valEndX) / 2);
+
+    mouseRegions.push({
+      id: `row:${opt.key}:select`,
+      x0: 2,
+      y0: rowY,
+      x1: valStartX - 1,
+      y1: rowY,
+      command: { _tag: "SelectRowIndex", rowIndex: idx },
+      tooltip: `Select parameter ${opt.label}`,
     });
-  }
-
-  leftRows.push({ text: "" });
-  leftRows.push({ text: "ACTIVE LLAMA.CPP FLEET (Click or [a] Add / [x] Replace):" });
-  for (const inst of state.instances) {
-    const marker = inst.id === state.activeInstanceId ? "*" : " ";
-    leftRows.push({
-      text: `${marker} ${inst.id} :${inst.port} [${inst.engineFlavor}] (${inst.status.toUpperCase()})`,
+    mouseRegions.push({
+      id: `row:${opt.key}:dec`,
+      x0: valStartX,
+      y0: rowY,
+      x1: valMidX,
+      y1: rowY,
+      command: { _tag: "CycleCurrentSetting", delta: -1 },
+      tooltip: `Previous choice for ${opt.label}`,
     });
+    mouseRegions.push({
+      id: `row:${opt.key}:inc`,
+      x0: valMidX + 1,
+      y0: rowY,
+      x1: Math.min(2 + leftInner - 1, valEndX),
+      y1: rowY,
+      command: { _tag: "CycleCurrentSetting", delta: 1 },
+      tooltip: `Next choice for ${opt.label}`,
+    });
+
+    leftColLines.push(padOrTruncate(styledRow, leftInner));
+    const subLine = `   ${opt.cliFlag} | ${opt.envVar}`;
+    leftColLines.push(padOrTruncate(fgDim(subLine), leftInner));
   }
 
-  leftRows.push({ text: "" });
-  leftRows.push({ text: "5-LAYER HIERARCHICAL TOML OUTPUT:" });
-  leftRows.push({ text: `  0: ${state.hierarchyRootDir}/00-defaults.toml` });
-  leftRows.push({ text: `  1: ${state.hierarchyRootDir}/hardware/${state.activeHardwareProfileId}.toml` });
-  leftRows.push({ text: `  2: ${state.hierarchyRootDir}/models/${state.activeModelId}.toml` });
-  leftRows.push({ text: `  3: ${state.hierarchyRootDir}/templates/${state.activeTemplateId}.toml` });
-  leftRows.push({ text: `  4: ${state.hierarchyRootDir}/instances/active_fleet.toml` });
-  leftRows.push({ text: `  => ${state.unifiedModelsTomlPath}` });
-
-  // Build Right Column rows (ASCII diagram, Impact, Pros/Cons, Fit Rule, Telemetry Tail)
-  const rightRows: string[] = [];
-  if (activeOption) {
-    rightRows.push(`PARAMETER: ${activeOption.label} (${activeOption.cliFlag} / ${activeOption.envVar})`);
-    rightRows.push("-".repeat(rightWidth));
-    for (const artLine of activeOption.asciiArt) {
-      rightRows.push(artLine);
-    }
-    rightRows.push("");
-    for (const w of wrapTextToWidth(`IMPACT: ${activeOption.impact}`, rightWidth)) {
-      rightRows.push(w);
-    }
-    for (const pro of activeOption.pros) {
-      rightRows.push(`  [+] ${pro}`);
-    }
-    for (const con of activeOption.cons) {
-      rightRows.push(`  [-] ${con}`);
-    }
-    for (const f of wrapTextToWidth(activeOption.fitRule, rightWidth)) {
-      rightRows.push(f);
-    }
+  leftColLines.push(fgMuted(B_H.repeat(leftInner)));
+  leftColLines.push(padOrTruncate(fgCyan("ACTIVE LLAMA.CPP FLEET ([g] Launch | [a] Add | [x] Swap):"), leftInner));
+  for (const inst of state.instances.slice(0, 3)) {
+    const isAct = inst.id === state.activeInstanceId;
+    const statusLabel =
+      isAct && sys.serverOnline
+        ? fgGreen(`PID:${sys.pid ?? inst.pid ?? "LIVE"}`)
+        : inst.status === "healthy"
+          ? fgGreen(`PID:${inst.pid ?? "LIVE"}`)
+          : fgYellow(inst.status.toUpperCase());
+    const marker = isAct ? fgCyan("*") : " ";
+    const instLine = `${marker}${inst.id} [${inst.engineFlavor}] :${inst.port} NUMA:${inst.numaNodes} ${statusLabel}`;
+    leftColLines.push(padOrTruncate(instLine, leftInner));
   }
-
-  rightRows.push("");
-  rightRows.push("PI-TELEMETRY SPAN & SHA-256 HASH-CHAIN TAIL:");
-  for (const entry of state.telemetryLogs.slice(-3)) {
-    rightRows.push(
-      `  #${entry.seq} [${entry.spanName}] ${entry.message} (sha:${entry.entryHashHex.slice(0, 8)})`,
+  const activeFlavorSetting = state.settingsValues.engine_flavor;
+  if (activeFlavorSetting) {
+    leftColLines.push(
+      padOrTruncate(
+        fgDim(`   Active Engine Flavor: ${activeFlavorSetting} | Handover: ${state.settingsValues.replace_policy ?? "atomic_port_rebind"}`),
+        leftInner,
+      ),
     );
   }
 
-  const bodyRowCount = Math.max(leftRows.length, rightRows.length, 18);
-  for (let i = 0; i < bodyRowCount; i++) {
-    const lEntry = leftRows[i] ?? { text: "" };
-    const rText = rightRows[i] ?? "";
-    const y = pushDualColumnLine(lEntry.text, rText);
+  // Right Column: Option Inspector + ACTIVE VARIANT Explanation + Diagram + Pros/Cons + Fit
+  const rightColLines: string[] = [];
+  const fitBadgeText = activeOption.fitRule.split(":")[0] ?? "OPTIMAL";
+  const fitColor = fitBadgeText.includes("OPTIMAL")
+    ? fgGreen
+    : fitBadgeText.includes("WARN")
+      ? fgYellow
+      : fgCyan;
 
-    if (lEntry.rowIndex !== undefined) {
-      const idx = lEntry.rowIndex;
-      if (idx === selectedRow && lEntry.prevX0 !== undefined && lEntry.nextX0 !== undefined) {
-        regions.push(
-          Object.freeze({
-            id: `setting_prev:${idx}`,
-            x0: lEntry.prevX0,
-            y0: y,
-            x1: lEntry.prevX1 ?? lEntry.prevX0 + 2,
-            y1: y,
-            command: Object.freeze({ _tag: "CycleCurrentSetting", delta: -1 }),
-            tooltip: "Previous option value",
-          }),
-        );
-        regions.push(
-          Object.freeze({
-            id: `setting_next:${idx}`,
-            x0: lEntry.nextX0,
-            y0: y,
-            x1: lEntry.nextX1 ?? lEntry.nextX0 + 2,
-            y1: y,
-            command: Object.freeze({ _tag: "CycleCurrentSetting", delta: 1 }),
-            tooltip: "Next option value",
-          }),
-        );
-      }
-      regions.push(
-        Object.freeze({
-          id: `setting_row:${idx}`,
-          x0: 2,
-          y0: y,
-          x1: 2 + leftWidth - 1,
-          y1: y,
-          command:
-            idx === selectedRow
-              ? Object.freeze({ _tag: "CycleCurrentSetting", delta: 1 })
-              : Object.freeze({ _tag: "SelectRowIndex", rowIndex: idx }),
-          tooltip: `Select setting row ${idx}`,
-        }),
-      );
+  rightColLines.push(
+    padOrTruncate(
+      `${fgWhiteBold(`OPTION: ${activeOption.label}`)}  ${fitColor(`[${fitBadgeText}]`)}`,
+      rightInner,
+    ),
+  );
+  rightColLines.push(
+    padOrTruncate(
+      `${fgCyan(`CLI: ${activeOption.cliFlag}`)} ${fgMuted("|")} ${fgYellow(`ENV: ${activeOption.envVar}`)} ${fgMuted("|")} Value: ${fgGreen(activeVal)}`,
+      rightInner,
+    ),
+  );
+
+  for (const fitLine of wrapTextToWidth(`FIT: ${activeOption.fitRule}`, rightInner).slice(0, 2)) {
+    rightColLines.push(padOrTruncate(fgMuted(fitLine), rightInner));
+  }
+
+  // ACTIVE VARIANT specific explanation callout box
+  const activeChoiceExplanation =
+    activeOption.choiceDescriptions[activeVal] ??
+    `Selected variant '${activeVal}' for ${activeOption.label} (${activeOption.cliFlag}).`;
+  const choiceIndex = activeOption.choices.indexOf(activeVal);
+  const variantCounter = `${Math.max(1, choiceIndex + 1)}/${activeOption.choices.length}`;
+  rightColLines.push(
+    padOrTruncate(
+      `${fgGreen(`ACTIVE VARIANT [< ${activeVal} >] (${variantCounter}):`)} ${fgDim("(Left/Right/Space to cycle variants)")}`,
+      rightInner,
+    ),
+  );
+  for (const vLine of wrapTextToWidth(activeChoiceExplanation, rightInner - 2).slice(0, 2)) {
+    rightColLines.push(padOrTruncate(`  ${fgWhiteBold(vLine)}`, rightInner));
+  }
+
+  // Other available variants summary line
+  const otherVariantsSummary = activeOption.choices
+    .map((c) => (c === activeVal ? `[${c}]` : c))
+    .join(" | ");
+  rightColLines.push(
+    padOrTruncate(`${fgCyan("VARIANTS:")} ${fgMuted(otherVariantsSummary)}`, rightInner),
+  );
+
+  // Diagram Header (shows active visual mode + Kitty/Ghostty PNG asset metadata)
+  const diagramAsset = getCategoryDiagramAsset(state.activeCategory);
+  const activeProto = resolveActiveImageProtocol(state.visualDiagramMode);
+  const diagModeBadge =
+    state.visualDiagramMode === "graphical_image" || activeProto !== null
+      ? `PNG#${diagramAsset.imageId}:${activeProto ?? "kitty_ready"}`
+      : `Mode:${state.visualDiagramMode.toUpperCase()}`;
+  rightColLines.push(
+    padOrTruncate(
+      `${fgMagenta(`DIAGRAM [${diagramAsset.title}]`)} ${fgCyan(`[${diagModeBadge} | v:Toggle]`)}`,
+      rightInner,
+    ),
+  );
+  for (const artLine of activeOption.asciiArt.slice(0, 5)) {
+    rightColLines.push(padOrTruncate(fgCyan(`  ${artLine}`), rightInner));
+  }
+
+  // Impact + Pros & Cons
+  for (const impLine of wrapTextToWidth(`IMPACT: ${activeOption.impact}`, rightInner).slice(0, 2)) {
+    rightColLines.push(padOrTruncate(fgYellow(impLine), rightInner));
+  }
+  for (const pro of activeOption.pros.slice(0, 2)) {
+    rightColLines.push(padOrTruncate(`${fgGreen("+")} ${pro}`, rightInner));
+  }
+  for (const con of activeOption.cons.slice(0, 1)) {
+    rightColLines.push(padOrTruncate(`${fgRed("-")} ${con}`, rightInner));
+  }
+  if (state.telemetryLogs.length > 0) {
+    const recentSpans = state.telemetryLogs
+      .slice(-2)
+      .map((entry) => `[${entry.spanName}] ${entry.message}`)
+      .join(" | ");
+    rightColLines.push(padOrTruncate(fgDim(`SPANS: ${recentSpans}`), rightInner));
+  }
+
+  // Compose Body using `@earendil-works/pi-tui` `HStack` (wide) or `VStack` (narrow)
+  const bodyLines: string[] = [];
+  if (!isStacked) {
+    const rowCount = Math.max(leftColLines.length, rightColLines.length, 18);
+    const normLeft: string[] = [];
+    const normRight: string[] = [];
+    for (let r = 0; r < rowCount; r++) {
+      normLeft.push(padOrTruncate(leftColLines[r] ?? "", leftInner));
+      normRight.push(padOrTruncate(rightColLines[r] ?? "", rightInner));
+    }
+    const sepLines = Array.from({ length: rowCount }, () => ` ${borderTone(B_V)} `);
+    const dualPane = new HStack(
+      [
+        { component: new FixedLinesWidget(normLeft), basis: leftInner, grow: 0, shrink: 0 },
+        { component: new FixedLinesWidget(sepLines), basis: 3, grow: 0, shrink: 0 },
+        { component: new FixedLinesWidget(normRight), basis: rightInner, grow: 0, shrink: 0 },
+      ],
+      { gap: 0 },
+    );
+    for (const joined of dualPane.render(innerWidth)) {
+      bodyLines.push(`${borderTone(B_V)} ${padOrTruncate(joined, innerWidth)} ${borderTone(B_V)}`);
+    }
+  } else {
+    const stackedBox = new Box(0, 0);
+    stackedBox.addChild(new FixedLinesWidget(leftColLines));
+    stackedBox.addChild(new Text(fgMuted(B_H.repeat(innerWidth)), 0, 0));
+    stackedBox.addChild(new FixedLinesWidget(rightColLines));
+    for (const line of stackedBox.render(innerWidth)) {
+      bodyLines.push(`${borderTone(B_V)} ${padOrTruncate(line, innerWidth)} ${borderTone(B_V)}`);
     }
   }
 
-  // Footer
-  lines.push(splitBorder);
-  pushBoxLine(`STATUS: ${state.statusBanner}`);
-  pushBoxLine(
-    "KEYS & MOUSE: Click any Tab/Row/Button | Wheel:Scroll | 1-7:Tab | Up/Down/j/k:Row | Left/Right/Space:Value | m:Model | t:Tmpl | s:SaveTmpl | a:AddLlama | x:ReplaceLlama | e:Export&Sync | q:Quit",
+  // Footer: Status Banner + Key & Mouse Hint Bar
+  const footerLines: string[] = [
+    borderTone(`${B_LT}${B_H.repeat(width - 2)}${B_RT}`),
+    `${borderTone(B_V)} ${padOrTruncate(
+      `${fgGreen("STATUS:")} ${state.statusBanner} ${fgMuted("|")} TOML: ${fgCyan(state.hierarchyRootDir)}`,
+      innerWidth,
+    )} ${borderTone(B_V)}`,
+    `${borderTone(B_V)} ${padOrTruncate(
+      `${fgCyan("KEYS:")} 1-7/Tab:Cat | Up/Down:Row | Left/Right:Variant | Enter/g:Launch | m:Model | t:Preset | p:PTO | v:Visual | ?:Help | q:Quit`,
+      innerWidth,
+    )} ${borderTone(B_V)}`,
+    borderTone(`${B_BL}${B_H.repeat(width - 2)}${B_BR}`),
+  ];
+
+  const rootVStack = new VStack(
+    [
+      new FixedLinesWidget(topLines),
+      new FixedLinesWidget(bodyLines),
+      new FixedLinesWidget(footerLines),
+    ],
+    { gap: 0 },
   );
-  lines.push(horizBorder);
+
+  const renderedLines = rootVStack.render(width).map((line) => padOrTruncate(line, width));
 
   return Object.freeze({
-    lines: Object.freeze(lines),
-    mouseRegions: Object.freeze(regions),
+    lines: Object.freeze(renderedLines),
+    mouseRegions: Object.freeze(mouseRegions),
     width,
   });
 }
@@ -422,8 +782,8 @@ export interface CapsulePiTuiComponentOptions {
 }
 
 /**
- * Interactive `@earendil-works/pi-tui` `Component` with both keyboard (`handleInput`)
- * and mouse (`handleMouse`) support, plus optional wrapping inside `MouseRegion`.
+ * Interactive `@earendil-works/pi-tui` `Component` implementation with
+ * keyboard + mouse support, responsive layout, and Hexagonal effect dispatch.
  */
 export class CapsulePiTuiComponent implements Component {
   private state: CapsuleControlState;
@@ -535,6 +895,16 @@ export class CapsulePiTuiComponent implements Component {
   }
 
   handleInput(data: string): void {
+    if (data === "?" || (matchesKey(data, Key.escape) && this.state.showHelpModal)) {
+      this.dispatchCommand({ _tag: "ToggleHelpModal" });
+      return;
+    }
+
+    if (data === "v" || data === "V") {
+      this.dispatchCommand({ _tag: "ToggleVisualMode" });
+      return;
+    }
+
     if (data === "q" || data === "Q" || matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
       this.onQuit?.();
       return;
@@ -544,6 +914,9 @@ export class CapsulePiTuiComponent implements Component {
       const idx = Number(data) - 1;
       const cat = CATEGORIES[idx];
       if (cat) {
+        if (this.state.showHelpModal) {
+          this.dispatchCommand({ _tag: "ToggleHelpModal" });
+        }
         this.dispatchCommand({ _tag: "SelectCategory", category: cat.id });
       }
       return;

@@ -205,6 +205,7 @@ export interface SettingOptionSpec {
   readonly category: CategoryId;
   readonly label: string;
   readonly choices: readonly string[];
+  readonly choiceDescriptions: Readonly<Record<string, string>>;
   readonly defaultValue: string;
   readonly cliFlag: string;
   readonly envVar: string;
@@ -367,7 +368,9 @@ export type DomainCommand =
   | { readonly _tag: "IngestLiveTelemetry"; readonly telemetry: SystemTelemetry }
   | { readonly _tag: "ExportHierarchicalToml" }
   | { readonly _tag: "SyncAllAgentSdks" }
-  | { readonly _tag: "ResetCurrentCategoryDefaults" };
+  | { readonly _tag: "ResetCurrentCategoryDefaults" }
+  | { readonly _tag: "ToggleHelpModal" }
+  | { readonly _tag: "ToggleVisualMode" };
 
 export interface CapsuleControlState {
   readonly activeCategory: CategoryId;
@@ -387,6 +390,8 @@ export interface CapsuleControlState {
   readonly statusBanner: string;
   readonly hierarchyRootDir: FilePath;
   readonly unifiedModelsTomlPath: FilePath;
+  readonly showHelpModal: boolean;
+  readonly visualDiagramMode: "auto" | "ascii_only" | "graphical_image";
 }
 
 /**
@@ -982,6 +987,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "models_templates",
     label: "Active Model Checkpoint",
     choices: BUILTIN_MODELS.map((m) => m.id),
+    choiceDescriptions: Object.freeze(
+      Object.fromEntries(
+        BUILTIN_MODELS.map((m) => [
+          m.id,
+          `${m.displayName} [${m.parameterScale}, ${m.quantization}, Disk ${m.diskSizeGiB} GiB / RAM ${m.ramFootprintGiB} GiB]: ${m.notes}`,
+        ]),
+      ),
+    ),
     defaultValue: "deepseek_v41_flash",
     cliFlag: "-m <model.gguf>",
     envVar: "LLAMA_MODEL_ID",
@@ -1001,6 +1014,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "models_templates",
     label: "Configuration Template Preset",
     choices: BUILTIN_TEMPLATES.map((t) => t.id),
+    choiceDescriptions: Object.freeze(
+      Object.fromEntries(
+        BUILTIN_TEMPLATES.map((t) => [
+          t.id,
+          `${t.displayName} (${t.targetUseCase}): ${t.description}`,
+        ]),
+      ),
+    ),
     defaultValue: "coding_pinpoint",
     cliFlag: "--template",
     envVar: "CTX_CAPSULE_TEMPLATE",
@@ -1020,6 +1041,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "models_templates",
     label: "Hardware Topology Profile",
     choices: BUILTIN_HARDWARE_PROFILES.map((h) => h.id),
+    choiceDescriptions: Object.freeze(
+      Object.fromEntries(
+        BUILTIN_HARDWARE_PROFILES.map((h) => [
+          h.id,
+          `${h.displayName}: CPU ${h.cpuTopology} | GPU ${h.gpuTopology} | Storage ${h.storageTopology}`,
+        ]),
+      ),
+    ),
     defaultValue: "epyc_milan_rtx4090",
     cliFlag: "--hw-profile",
     envVar: "LLAMA_HW_PROFILE",
@@ -1037,6 +1066,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "models_templates",
     label: "Hierarchical TOML Emission Mode",
     choices: ["layered_plus_compiled", "layered_only", "compiled_models_toml_only"],
+    choiceDescriptions: Object.freeze({
+      layered_plus_compiled:
+        "Writes modular 5-layer TOML files under scripts/configs/hierarchy/ AND compiles the merged scripts/configs/models.toml for launch.py.",
+      layered_only:
+        "Writes only the modular 5-layer TOML files under scripts/configs/hierarchy/ without overwriting scripts/configs/models.toml.",
+      compiled_models_toml_only:
+        "Writes only the flattened scripts/configs/models.toml artifact without updating individual hierarchy layer files.",
+    }),
     defaultValue: "layered_plus_compiled",
     cliFlag: "--toml-mode",
     envVar: "CTX_TOML_MODE",
@@ -1056,6 +1093,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "models_templates",
     label: "Model Container Format",
     choices: ["gguf_x_npmc_v3", "aligned_gguf_2mb", "standard_gguf"],
+    choiceDescriptions: Object.freeze({
+      gguf_x_npmc_v3:
+        "GGUF-X / NPMC v3 2 MiB superblock container with BitwiseVeb4096 O(1) expert index, Elias-Fano offsets, and segregated cold PLE segment.",
+      aligned_gguf_2mb:
+        "Single or multi-shard GGUF with tensor payloads padded to 2 MiB HugeTLB boundaries for zero-copy mmap/O_DIRECT.",
+      standard_gguf:
+        "Unmodified upstream GGUF v3 layout (32-byte tensor alignment; may incur LINT005 shard jumps on multi-file MoEs).",
+    }),
     defaultValue: "gguf_x_npmc_v3",
     cliFlag: "--npmc-superblock",
     envVar: "LLAMA_NPMC_SUPERBLOCK",
@@ -1077,6 +1122,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "llama_fleet",
     label: "Selected Fleet Instance",
     choices: ["llama-primary-8080", "llama-fast-8081", "llama-formal-8082"],
+    choiceDescriptions: Object.freeze({
+      "llama-primary-8080":
+        "Primary coding & deep reasoning endpoint on :8080 (realtime slab priority, DeepSeek-V4.1-Flash-1017 default, ik_llama_pto_lto).",
+      "llama-fast-8081":
+        "Fast subagent & speculative draft worker on :8081 (cooperative slab priority, Qwen3.8-27B 100% GPU VRAM default, ik_llama_opt).",
+      "llama-formal-8082":
+        "Lean 4 formal theorem proving standby on :8082 (background_yield slab priority, Leanstral-119B default, ik_llama_rust_ffi).",
+    }),
     defaultValue: "llama-primary-8080",
     cliFlag: "--instance-id",
     envVar: "LLAMA_INSTANCE_ID",
@@ -1103,6 +1156,18 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
       "ik_llama_vanilla",
       "upstream_llama_cpp",
     ],
+    choiceDescriptions: Object.freeze({
+      ik_llama_pto_lto:
+        "E5 Production Binary (build-pto/bin/llama-server): Clang-21 IRPGO + ThinLTO + Machine Function Splitting (-34.8% branch misses, +9.4% prefill).",
+      ik_llama_rust_ffi:
+        "E4 Hybrid Binary (build/bin/llama-server): C++20/CUDA sm_89 + Rust/Lean 4 FFI superblock & storage NUMA engine.",
+      ik_llama_opt:
+        "E3 Optimized C++20/CUDA sm_89 Binary (build-e3-opt/bin/llama-server): MLA, DSA, ZDD, SWA-compress without external Rust FFI.",
+      ik_llama_vanilla:
+        "E2 Baseline ikawrakow/ik_llama.cpp Binary (build-vanilla/bin/llama-server): Reference IQK kernels without custom NUMA/ZDD/Capsule patches.",
+      upstream_llama_cpp:
+        "E1 Mainline ggerganov/llama.cpp Binary (../llama.cpp/build/bin/llama-server): Required for architectures like Kimi-K3 Gated MLA.",
+    }),
     defaultValue: "ik_llama_rust_ffi",
     cliFlag: "--engine-flavor",
     envVar: "LLAMA_ENGINE_FLAVOR",
@@ -1123,6 +1188,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "llama_fleet",
     label: "In-Place Replacement Strategy",
     choices: ["atomic_port_rebind", "zero_downtime_shadow", "drain_then_exec"],
+    choiceDescriptions: Object.freeze({
+      atomic_port_rebind:
+        "Persists KV capsules to /dev/shm slab, terminates old process to free 24 GiB GPU VRAM first, then binds replacement to the same port.",
+      zero_downtime_shadow:
+        "Warms the replacement binary in parallel on a shadow socket before atomically flipping traffic (requires spare GPU VRAM).",
+      drain_then_exec:
+        "Waits for all active HTTP generation slots to finish streaming before exec-replacing the server process.",
+    }),
     defaultValue: "atomic_port_rebind",
     cliFlag: "--handover-mode",
     envVar: "LLAMA_HANDOVER_MODE",
@@ -1140,6 +1213,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "llama_fleet",
     label: "Multi-Model UniversalSlabArena Policy",
     choices: ["cooperative_lru_yield", "strict_static_quota", "busy_preempts_idle"],
+    choiceDescriptions: Object.freeze({
+      cooperative_lru_yield:
+        "Idle models compress cold KV pages into 225B Binary Fuse8 capsules and cooperatively yield 2 MiB VRAM slabs to active models.",
+      strict_static_quota:
+        "Partitions GPU VRAM and pinned host RAM into fixed non-overlapping quotas per instance with zero cross-model borrowing.",
+      busy_preempts_idle:
+        "High-priority realtime instances immediately preempt VRAM slabs from background_yield instances upon burst prefill arrival.",
+    }),
     defaultValue: "cooperative_lru_yield",
     cliFlag: "--slab-policy",
     envVar: "LLAMA_SLAB_POLICY",
@@ -1159,6 +1240,13 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "llama_fleet",
     label: "Active Instance HTTP Port",
     choices: ["8080", "8081", "8082", "8083", "8084"],
+    choiceDescriptions: Object.freeze({
+      "8080": "Port 8080: Default primary endpoint wired to Pi, Antigravity, Claude, OpenCode, Codex, and Copilot.",
+      "8081": "Port 8081: Secondary fleet port reserved for fast dense subagent / speculative worker instances.",
+      "8082": "Port 8082: Tertiary fleet port reserved for formal verification / Leanstral-119B standby instances.",
+      "8083": "Port 8083: Auxiliary dynamic worker port #4 for A/B benchmark or multi-agent council shards.",
+      "8084": "Port 8084: Auxiliary dynamic worker port #5 for shadow warmups and experimental builds.",
+    }),
     defaultValue: "8080",
     cliFlag: "--port",
     envVar: "LLAMA_ARG_PORT",
@@ -1177,6 +1265,19 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "evidence_capsules",
     label: "Evidence Selection Strategy",
     choices: ["maxsim_exact_cover", "code_pinpoint", "adaptive", "bm25_Plus", "colbert_late", "off"],
+    choiceDescriptions: Object.freeze({
+      maxsim_exact_cover:
+        "ColBERT Late-Interaction MaxSim + BM25+ lexical scoring + Exact-Cover submodular span partitioning across chunks.",
+      code_pinpoint:
+        "Identifier/symbol-boosted (beta=3.5) MaxSim selection with +-1 neighbor chunk expansion for function/struct boundaries.",
+      adaptive:
+        "Dynamically switches between code_pinpoint, narrative recall, and analytic aggregate based on prompt token entropy and symbol density.",
+      bm25_Plus:
+        "Fast purely lexical BM25+ saturation scoring with lower-bounded TF normalization for exact log and stack-trace needles.",
+      colbert_late:
+        "Pure dense token-level ColBERT MaxSim cosine interaction without BM25 lexical weighting.",
+      off: "Disables evidence pruning; sends 100% of raw prompt tokens directly into attention prefill.",
+    }),
     defaultValue: "maxsim_exact_cover",
     cliFlag: "--evidence-strategy",
     envVar: "LLAMA_EVIDENCE_STRATEGY",
@@ -1194,6 +1295,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "evidence_capsules",
     label: "Evidence Chunk Granularity",
     choices: ["32", "64", "128", "140", "256", "512"],
+    choiceDescriptions: Object.freeze({
+      "32": "32-token micro-spans: Ultra-fine line-level needle pruning; doubles Binary Fuse capsule count.",
+      "64": "64-token hardware-aligned spans: Matches ZDD 64-token FlashAttention tile boundary 1:1 for zero-waste tile skipping.",
+      "128": "128-token standard paragraph spans: Balanced granularity for mixed prose and code.",
+      "140": "140-token UNREAL canonical spans (arXiv:2610.08463): Divisible by Lp=7 hierarchical centroid pooling (20 centroids/chunk).",
+      "256": "256-token function-level spans: Retains complete medium functions per chunk with fewer capsules.",
+      "512": "512-token coarse file-section spans: Lowest indexing overhead; matches SWA 512-token window.",
+    }),
     defaultValue: "64",
     cliFlag: "--evidence-chunk-tokens",
     envVar: "LLAMA_EVIDENCE_CHUNK_TOKENS",
@@ -1210,6 +1319,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "evidence_capsules",
     label: "Active Evidence Keep Ratio",
     choices: ["10%", "15%", "20%", "35%", "50%", "100%"],
+    choiceDescriptions: Object.freeze({
+      "10%": "Retains top 10% chunks in hot KV (90% pruned into Fuse8 capsules): ~8.5x prefill speedup for 1M-10M log needle hunts.",
+      "15%": "Retains top 15% chunks in hot KV: Recommended for 1M-token single-GPU deep synthesis (low_vram_1m preset).",
+      "20%": "Retains top 20% chunks in hot KV: Golden ratio for interactive coding agents (5.94x speedup, 100% needle recall).",
+      "35%": "Retains top 35% chunks in hot KV: Recommended for dense Lean 4 / mathematical proof obligations.",
+      "50%": "Retains top 50% chunks in hot KV: Conservative 2x prefill acceleration for broad cross-file refactoring.",
+      "100%": "Retains 100% of prompt tokens in hot KV (zero pruning; only records capsule telemetry).",
+    }),
     defaultValue: "20%",
     cliFlag: "--evidence-keep-ratio",
     envVar: "LLAMA_EVIDENCE_KEEP_RATIO",
@@ -1226,6 +1343,15 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "evidence_capsules",
     label: "KV Capsule Fingerprint Filter",
     choices: ["fuse8_simhash64", "fuse16_simhash64", "simhash64_only", "none"],
+    choiceDescriptions: Object.freeze({
+      fuse8_simhash64:
+        "8-bit Binary Fuse Filter (Graf & Lemire 2022, 9.0 bits/key, 0.39% FPR) + 64-bit LSH SimHash cosine sketch (225B total/capsule).",
+      fuse16_simhash64:
+        "16-bit Binary Fuse Filter (18.0 bits/key, 0.0015% FPR) + 64-bit LSH SimHash sketch for ultra-large 1M-10M token trajectories.",
+      simhash64_only:
+        "64-bit POPCNT SimHash semantic sketch only (8 bytes/capsule; wakes on semantic cosine similarity without exact token/bigram filter).",
+      none: "Disables KV capsule fingerprinting; pruned chunks are not indexed for automatic re-hydration.",
+    }),
     defaultValue: "fuse8_simhash64",
     cliFlag: "--evidence-filter",
     envVar: "LLAMA_CAPSULE_FILTER",
@@ -1245,6 +1371,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "evidence_capsules",
     label: "Capsule Wake Similarity Threshold",
     choices: ["0.50", "0.55", "0.60", "0.65", "0.70", "0.75"],
+    choiceDescriptions: Object.freeze({
+      "0.50": "Permissive wake (<=32/64 Hamming bits): High recall for loosely related concepts; wakes more capsules per turn.",
+      "0.55": "Broad semantic wake (<=28/64 Hamming bits): Good for exploratory architecture surveys.",
+      "0.60": "Balanced semantic wake (<=25/64 Hamming bits): Default threshold pairing high recall with low false wakes.",
+      "0.65": "Strict semantic wake (<=22/64 Hamming bits): Recommended at 1M+ tokens to keep hot KV window compact.",
+      "0.70": "High-precision wake (<=19/64 Hamming bits): Only wakes capsules with strong cosine similarity or exact Fuse hit.",
+      "0.75": "Pinpoint wake (<=16/64 Hamming bits): Primarily relies on Binary Fuse exact token/bigram hits.",
+    }),
     defaultValue: "0.60",
     cliFlag: "--capsule-wake-sim",
     envVar: "LLAMA_CAPSULE_WAKE_SIM",
@@ -1261,6 +1395,10 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "evidence_capsules",
     label: "Pre-Pruning Global Aggregation Header",
     choices: ["on", "off"],
+    choiceDescriptions: Object.freeze({
+      on: "Scans 100% of chunks pre-pruning to prepend exact corpus-wide token occurrence & chunk-frequency counts (<50 tokens).",
+      off: "Omits the global aggregation summary header (saves ~40 prompt tokens when exact corpus-wide counting is not needed).",
+    }),
     defaultValue: "on",
     cliFlag: "--global-summary-header",
     envVar: "LLAMA_GLOBAL_SUMMARY_HEADER",
@@ -1279,6 +1417,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "kv_paging",
     label: "Context Window Capacity (-c)",
     choices: ["16384", "65536", "131072", "262144", "524288", "1048576"],
+    choiceDescriptions: Object.freeze({
+      "16384": "16K tokens: Minimal VRAM footprint for single-file unit tests and micro-benchmarks.",
+      "65536": "64K tokens: Standard interactive context for ultra-scale 2.4T MoEs (Qwen3.8-2.4T).",
+      "131072": "128K tokens: Full theorem-proving module + Mathlib context for Leanstral-119B.",
+      "262144": "256K tokens: Fits 100% in 24 GiB VRAM on dense Qwen3.8-27B and hybrid GLM-5.3-Flash.",
+      "524288": "512K tokens: Production sweet spot for DeepSeek-V4.1-Flash-1017 with Q8_0 KV + --swa-compress (14.8 GiB VRAM).",
+      "1048576": "1M tokens: Extreme whole-repo context for DeepSeek-V4.1-Flash-1017 with Q4_0 KV + --swa-compress (or 8x128K swarm).",
+    }),
     defaultValue: "262144",
     cliFlag: "-c",
     envVar: "LLAMA_ARG_CTX_SIZE",
@@ -1295,6 +1441,11 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "kv_paging",
     label: "K-Cache Quantization (-ctk)",
     choices: ["q4_0", "q8_0", "f16"],
+    choiceDescriptions: Object.freeze({
+      q4_0: "4.5 bits/weight block-quantized Key cache: Halves VRAM vs q8_0, enabling 1M context and 4..8-slot swarms in 24 GiB.",
+      q8_0: "8.5 bits/weight block-quantized Key cache: Near-lossless (+0.012 PPL delta vs f16); ideal for 512K NP1 max-speed.",
+      f16: "16-bit IEEE FP16 Key cache: Uncompressed reference precision; limited to <=128K context on 24 GiB GPUs.",
+    }),
     defaultValue: "q8_0",
     cliFlag: "-ctk",
     envVar: "LLAMA_ARG_CACHE_TYPE_K",
@@ -1311,6 +1462,11 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "kv_paging",
     label: "V-Cache Quantization (-ctv)",
     choices: ["q4_0", "q8_0", "f16"],
+    choiceDescriptions: Object.freeze({
+      q4_0: "4.5 bits/weight Value cache (requires -fa on): Quarters V-cache memory bandwidth; paired with -ctk q4_0 at 1M context.",
+      q8_0: "8.5 bits/weight Value cache (requires -fa on): Halves V-cache footprint with negligible perplexity impact.",
+      f16: "16-bit IEEE FP16 Value cache: Standard uncompressed V-cache representation.",
+    }),
     defaultValue: "q8_0",
     cliFlag: "-ctv",
     envVar: "LLAMA_ARG_CACHE_TYPE_V",
@@ -1327,6 +1483,11 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "kv_paging",
     label: "DSA Indexer K-Cache Quantization (-ictk)",
     choices: ["q8_0", "q4_0", "f16"],
+    choiceDescriptions: Object.freeze({
+      q8_0: "8.5-bit DSA Indexer K-cache (4.25 GiB at 1M): Preserves 99.9% top-1024 sparse block selection overlap vs f16.",
+      q4_0: "4.5-bit DSA Indexer K-cache (2.25 GiB at 1M): Saves an extra 2.0 GiB VRAM for 8-slot 1M agent swarms.",
+      f16: "16-bit DSA Indexer K-cache (8.0 GiB at 1M): Uncompressed 64-head x 128-dim indexer keys.",
+    }),
     defaultValue: "q8_0",
     cliFlag: "-ictk",
     envVar: "LLAMA_ARG_INDEXER_CACHE_TYPE_K",
@@ -1344,6 +1505,10 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "kv_paging",
     label: "Sliding Window Attention Ring Compression (--swa-compress)",
     choices: ["on", "off"],
+    choiceDescriptions: Object.freeze({
+      on: "Allocates a compact per-sequence 512-token ring buffer on the 35 SWA layers while keeping full 512K/1M KV on the 5 full MLA layers (-87.5% SWA KV VRAM).",
+      off: "Allocates full context length across all 40 layers (exceeds 24 GiB VRAM above 128K on DeepSeek-V4.1-Flash).",
+    }),
     defaultValue: "on",
     cliFlag: "--swa-compress",
     envVar: "LLAMA_SWA_COMPRESS",
@@ -1361,6 +1526,10 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "kv_paging",
     label: "CUDA Fused DSA Indexer Kernel (-fidx)",
     choices: ["on", "off"],
+    choiceDescriptions: Object.freeze({
+      on: "Executes the fused sm_89 CUDA DSA indexer projection and top-K block scoring kernel without materializing intermediate score buffers.",
+      off: "Falls back to unfused multi-kernelggml graph ops for DSA indexer scoring.",
+    }),
     defaultValue: "on",
     cliFlag: "-fidx",
     envVar: "LLAMA_FUSED_INDEXER",
@@ -1377,6 +1546,10 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "kv_paging",
     label: "Dynamic Sparse Attention (-dsa -dsatk 1024)",
     choices: ["on", "off"],
+    choiceDescriptions: Object.freeze({
+      on: "Selects and attends to the top-1024 latent KV positions per query on full MLA layers, bounding long-context decode cost to O(1024).",
+      off: "Performs dense O(N) attention across all cached tokens on full MLA layers.",
+    }),
     defaultValue: "on",
     cliFlag: "-dsa",
     envVar: "LLAMA_DSA_ATTENTION",
@@ -1393,6 +1566,10 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "kv_paging",
     label: "ZDD 64-Token Block Skip (--zdd-sparse-kv)",
     choices: ["on", "off"],
+    choiceDescriptions: Object.freeze({
+      on: "Checks 64-token attention mask tiles for all -INF (0xFC00) and skips the entire tile's kq_vec_dot + softmax in O(1) on CPU and CUDA.",
+      off: "Evaluates dot products across all masked KV positions without tile-level short-circuiting.",
+    }),
     defaultValue: "on",
     cliFlag: "--zdd-sparse-kv",
     envVar: "LLAMA_KV_ZDD_SKIP",
@@ -1409,6 +1586,10 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "kv_paging",
     label: "Cohort Prefix Sharing & Cross-Slot KV Clone",
     choices: ["on", "off"],
+    choiceDescriptions: Object.freeze({
+      on: "Enables CohortRadixTrie longest-prefix matching and zero-copy cross-slot KV cloning (llama_kv_cache_seq_cp) across same-cohort slots.",
+      off: "Isolates each server slot's KV cache without cross-slot prefix sharing.",
+    }),
     defaultValue: "on",
     cliFlag: "--cohort-prefix-sharing",
     envVar: "LLAMA_COHORT_SHARING",
@@ -1426,6 +1607,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "kv_paging",
     label: "Host-to-VRAM Tiered KV Paging",
     choices: ["auto_hot_window", "force_host_paged", "vram_only"],
+    choiceDescriptions: Object.freeze({
+      auto_hot_window:
+        "Keeps KV 100% in GPU VRAM while within budget; automatically spills older 64-token pages to pinned host RAM with async PCIe DMA prefetch.",
+      force_host_paged:
+        "Forces all cold KV blocks into pinned host DDR4 memory and streams a compact GPU hot window per layer.",
+      vram_only:
+        "Requires 100% of KV cache to reside in GPU VRAM (fails fast if context allocation exceeds free VRAM).",
+    }),
     defaultValue: "auto_hot_window",
     cliFlag: "--tiered-kv",
     envVar: "LLAMA_PAGED_KV_AUTO",
@@ -1444,6 +1633,15 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "speculative",
     label: "Speculative Controller Algorithm",
     choices: ["thompson_counterfactual", "epsilon_greedy", "fixed_depth", "off"],
+    choiceDescriptions: Object.freeze({
+      thompson_counterfactual:
+        "Full-information Not-a-Bandit (arXiv:2510.20064) evaluating all candidate depths k in [0..K] from one verify pass + Discounted Thompson Sampling.",
+      epsilon_greedy:
+        "Online Welford mean/variance bandit with epsilon=0.10 uniform exploration across draft lengths and drafter stages.",
+      fixed_depth:
+        "Static draft horizon K = draft_max without online bandit adaptation or entropy gating.",
+      off: "Disables speculative decoding; executes standard single-token target autoregression.",
+    }),
     defaultValue: "thompson_counterfactual",
     cliFlag: "--spec-autotune",
     envVar: "LLAMA_SPEC_BANDIT",
@@ -1461,6 +1659,10 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "speculative",
     label: "TreeGraft Multi-Branch Draft Fusion",
     choices: ["on", "off"],
+    choiceDescriptions: Object.freeze({
+      on: "Merges neural drafter proposals (DSpark/MTP) with zero-cost CPU N-gram/suffix-trie branches into a unified verification tree batch.",
+      off: "Verifies only a single linear speculative draft chain per step.",
+    }),
     defaultValue: "on",
     cliFlag: "--treegraft",
     envVar: "LLAMA_TREEGRAFT",
@@ -1477,6 +1679,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "speculative",
     label: "Maximum Speculative Draft Depth",
     choices: ["0", "4", "6", "8", "12", "16"],
+    choiceDescriptions: Object.freeze({
+      "0": "Target-only decoding (0 speculative tokens proposed; zero draft overhead).",
+      "4": "Short 4-token draft horizon: Conservative low-latency speculation for high-entropy creative prose.",
+      "6": "Balanced 6-token draft horizon: Verified production ceiling for DSpark-Q8_0 + ngram-mod on DeepSeek-V4.1-Flash-1017.",
+      "8": "Standard 8-token draft horizon: Ideal for structured code and TypeScript/C++ generation.",
+      "12": "Deep 12-token draft horizon: Best for highly predictable boilerplate, JSON schemas, and Lean 4 tactic scripts.",
+      "16": "Ultra-deep 16-token horizon: Designed for parallel block-diffusion drafters (DiffusionGemma / DFlash).",
+    }),
     defaultValue: "8",
     cliFlag: "--draft-max",
     envVar: "LLAMA_DRAFT_MAX",
@@ -1493,6 +1703,10 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "speculative",
     label: "Concurrency Knee Auto-Throttle",
     choices: ["on", "off"],
+    choiceDescriptions: Object.freeze({
+      on: "Monitors active server slots S and DDR4/VRAM bus saturation; throttles draft depth K -> 0 when S >= C_knee.",
+      off: "Continues proposing speculative draft tokens even when multiple parallel slots are decoding simultaneously.",
+    }),
     defaultValue: "on",
     cliFlag: "--spec-knee-guard",
     envVar: "LLAMA_SPEC_KNEE_GUARD",
@@ -1511,6 +1725,12 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "hardware_numa",
     label: "CPU Compute Threads (-t)",
     choices: ["16", "28", "56", "112"],
+    choiceDescriptions: Object.freeze({
+      "16": "16 threads: Compact single-socket / 2-CCD allocation leaving 40 cores free for parallel builds.",
+      "28": "28 threads: Single EPYC 7453 socket allocation (Nodes 0..3) avoiding cross-socket xGMI hops.",
+      "56": "56 physical Zen 3 cores across both EPYC 7453 sockets: Saturates all 16 DDR4-3200 memory channels with zero SMT contention.",
+      "112": "112 logical SMT threads (2 threads/core): Increases barrier sync jitter on memory-bound MoE GEMV.",
+    }),
     defaultValue: "56",
     cliFlag: "-t",
     envVar: "LLAMA_ARG_THREADS",
@@ -1527,6 +1747,18 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "hardware_numa",
     label: "NUMA Topology Strategy (--numa)",
     choices: ["distribute", "expert", "isolate", "numactl", "disabled"],
+    choiceDescriptions: Object.freeze({
+      distribute:
+        "Interleaves MoE weight pages and worker threads evenly across all 8 NPS4 NUMA nodes (16 DDR4-3200 channels).",
+      expert:
+        "Shard-pins MoE experts deterministically across NUMA nodes with replicated shared attention tensors (--numa-replicate-shared).",
+      isolate:
+        "Binds threads strictly to local NUMA nodes without automatic cross-node page interleaving.",
+      numactl:
+        "Defers NUMA memory policy and CPU affinity to an outer numactl wrapper.",
+      disabled:
+        "Standard OS scheduler thread placement with no NUMA-aware page pinning.",
+    }),
     defaultValue: "distribute",
     cliFlag: "--numa",
     envVar: "LLAMA_NUMA",
@@ -1543,6 +1775,10 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "hardware_numa",
     label: "Defer Engram PLE Lookup to NVMe pread (--defer-ple)",
     choices: ["on", "off"],
+    choiceDescriptions: Object.freeze({
+      on: "Fetches sparse Per-Layer Embedding / Engram lookup rows (blk.1 / blk.14, 194.5 GiB) via O(1) NVMe pread while keeping routed MoE experts pinned in RAM.",
+      off: "Pre-loads all 194.5 GiB of Engram lookup tables into host RAM alongside MoE experts.",
+    }),
     defaultValue: "on",
     cliFlag: "--defer-ple",
     envVar: "LLAMA_DEFER_PLE",
@@ -1560,6 +1796,11 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "hardware_numa",
     label: "2 MiB HugeTLB / THP Mapping (-thp)",
     choices: ["on", "madvise", "off"],
+    choiceDescriptions: Object.freeze({
+      on: "Attempts MAP_HUGETLB (1G -> 2MB) first and falls back to MADV_HUGEPAGE + MADV_WILLNEED across all model weight mappings.",
+      madvise: "Uses standard 4 KiB mmap with MADV_HUGEPAGE kernel promotion without explicit MAP_HUGETLB allocation.",
+      off: "Uses default 4 KiB page tables (incurs high dTLB miss stalls on 200-400 GiB MoE models).",
+    }),
     defaultValue: "on",
     cliFlag: "--transparent-huge-pages",
     envVar: "LLAMA_THP",
@@ -1576,6 +1817,11 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "hardware_numa",
     label: "Linux io_uring + O_DIRECT Paging",
     choices: ["on", "auto", "off"],
+    choiceDescriptions: Object.freeze({
+      on: "Reopens model shards with O_DIRECT via /proc/self/fd and submits async reads through Linux io_uring SQPOLL into registered DMA slabs.",
+      auto: "Probes filesystem O_DIRECT alignment support first and falls back to buffered io_uring on ZFS.",
+      off: "Uses standard synchronous POSIX pread/mmap page fault I/O.",
+    }),
     defaultValue: "on",
     cliFlag: "--io-uring",
     envVar: "GGML_MOE_URING_PREFETCH",
@@ -1592,6 +1838,10 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "hardware_numa",
     label: "Rust + Lean 4 Mmap Engine FFI (E4)",
     choices: ["on", "off"],
+    choiceDescriptions: Object.freeze({
+      on: "Links librust_mmap_engine.so for O(1) BitwiseVeb4096 superblock indexing, NVMe NUMA affinity discovery, and Lean 4 verified bitplane kernels.",
+      off: "Uses pure C++20 fallback implementations inside ggml/llama.",
+    }),
     defaultValue: "on",
     cliFlag: "-DGGML_RUST_MMAP_ENGINE=ON",
     envVar: "LLAMA_RUST_MMAP_FFI",
@@ -1608,6 +1858,15 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "hardware_numa",
     label: "PTO / IRPGO + ThinLTO Mode",
     choices: ["irpgo_thinlto_split", "cs_irpgo_2stage", "continuous_live_server", "off"],
+    choiceDescriptions: Object.freeze({
+      irpgo_thinlto_split:
+        "Single-round Clang-21 IRPGO + ThinLTO (-flto=thin) + Machine Function Splitting (-fsplit-machine-functions) + LLD safe ICF.",
+      cs_irpgo_2stage:
+        "2-round Context-Sensitive IRPGO (-fcs-profile-generate) refining post-inlining branch probabilities across hot IQK & MLA loops.",
+      continuous_live_server:
+        "Live daemon counter sync (-fprofile-continuous, %p%c.profraw) allowing zero-downtime profile harvesting from real agent traffic.",
+      off: "Standard -O3 -march=znver3 release compilation without profile-guided feedback.",
+    }),
     defaultValue: "irpgo_thinlto_split",
     cliFlag: "--pto",
     envVar: "LLAMA_PTO_MODE",
@@ -1626,6 +1885,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "hardware_numa",
     label: "PTO Profile Trace Workload",
     choices: ["full_6stage_server_sweep", "live_server_continuous", "fast_kernel_sweep"],
+    choiceDescriptions: Object.freeze({
+      full_6stage_server_sweep:
+        "Executes all 6 calibration stages: WikiText-2 PPL, staged long-ctx prefill, math reasoning, speculative decode, multi-slot HTTP + Cohort KV clone, and llama-bench.",
+      live_server_continuous:
+        "Merges live mmaped %p%c.profraw counters directly from the running llama-server daemon without running synthetic sweeps.",
+      fast_kernel_sweep:
+        "Quick 90-second micro-sweep running Stage 4 (speculative decode) + Stage 6 (llama-bench GEMM/FA/MoE kernels).",
+    }),
     defaultValue: "full_6stage_server_sweep",
     cliFlag: "--pto-workload",
     envVar: "LLAMA_PTO_WORKLOAD",
@@ -1643,6 +1910,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "hardware_numa",
     label: "PTO Compiler & Linker Toolchain",
     choices: ["clang21_lld_znver3", "clang22_lld_znver3", "aocc_znver3"],
+    choiceDescriptions: Object.freeze({
+      clang21_lld_znver3:
+        "Clang 21 + ld.lld-21 + llvm-profdata-21 (-march=znver3) + CUDA 13.3 nvcc (sm_89): Default zero-warning production toolchain.",
+      clang22_lld_znver3:
+        "Bleeding-edge Clang 22 + ld.lld-22 toolchain with automatic -allow-unsupported-compiler passed to nvcc.",
+      aocc_znver3:
+        "AMD Optimizing C/C++ Compiler (AOCC Zen 3 pipeline) with AMD LibM vector intrinsics.",
+    }),
     defaultValue: "clang21_lld_znver3",
     cliFlag: "--compiler",
     envVar: "LLAMA_PTO_TOOLCHAIN",
@@ -1659,6 +1934,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "hardware_numa",
     label: "PTO Target Binaries & Shared Libs",
     choices: ["static_plus_shared_libs", "static_lto_monobinary", "shared_libs_only"],
+    choiceDescriptions: Object.freeze({
+      static_plus_shared_libs:
+        "Finetunes both static ThinLTO binaries (llama-server, llama-cli, llama-bench) AND PIC shared libraries (libggml.so, libllama.so, librust_mmap_engine.so).",
+      static_lto_monobinary:
+        "Builds only whole-program ThinLTO static executables for maximum cross-TU inlining.",
+      shared_libs_only:
+        "Rebuilds only libggml.so, libllama.so, and librust_mmap_engine.so for external FFI hosts (Ollama / Python / Rust).",
+    }),
     defaultValue: "static_plus_shared_libs",
     cliFlag: "--shared-libs",
     envVar: "LLAMA_PTO_LINKAGE",
@@ -1677,6 +1960,16 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "sampling_sdks",
     label: "Deep Thinking / Reasoning Effort (--reasoning-budget)",
     choices: ["max_deep_think", "high_analytical", "balanced", "fast_direct"],
+    choiceDescriptions: Object.freeze({
+      max_deep_think:
+        "Unbounded reasoning budget (-1): Allows full multi-thousand-token <think> chains for Lean 4 proofs, deep debugging, and architecture design.",
+      high_analytical:
+        "16,384-token <think> budget: High analytical depth for multi-file refactors while bounding tail latency.",
+      balanced:
+        "8,192-token <think> budget: Balanced reasoning depth and fast tool-call turnaround for iterative coding.",
+      fast_direct:
+        "2,048-token compact <think> budget: Near-instant tool and diff emission for straightforward edits.",
+    }),
     defaultValue: "max_deep_think",
     cliFlag: "--reasoning-budget",
     envVar: "LLAMA_THINKING_EFFORT",
@@ -1698,6 +1991,14 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "sampling_sdks",
     label: "Sampling Temperature (--temp)",
     choices: ["0.0", "0.1", "0.2", "0.6", "0.7", "1.0"],
+    choiceDescriptions: Object.freeze({
+      "0.0": "Deterministic argmax greedy decoding: Mandatory for reproducible perplexity audits and formal proof replay.",
+      "0.1": "Precision coding temperature: Near-deterministic syntax with slight tie-breaking diversity.",
+      "0.2": "Balanced analytical temperature: Good for multi-hypothesis debugging and test generation.",
+      "0.6": "Recommended DeepSeek reasoning temperature for open-ended mathematical exploration.",
+      "0.7": "Standard conversational & brainstorming temperature.",
+      "1.0": "Unscaled raw logit softmax distribution for high-diversity candidate sampling.",
+    }),
     defaultValue: "0.1",
     cliFlag: "--temp",
     envVar: "LLAMA_ARG_TEMP",
@@ -1714,6 +2015,13 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "sampling_sdks",
     label: "Pi Telemetry & Hash-Chained JSONL Sink",
     choices: ["pi_telemetry_plus_jsonl", "in_memory_only", "noop"],
+    choiceDescriptions: Object.freeze({
+      pi_telemetry_plus_jsonl:
+        "Emits typed @earendil-works/pi-telemetry OTel spans AND appends SHA-256 hash-chained records to .pi/harness-bridge/ctx-capsule-telemetry.jsonl.",
+      in_memory_only:
+        "Retains the last 64 telemetry spans in the in-memory ring buffer for the TUI inspector without writing to disk.",
+      noop: "Disables telemetry span emission.",
+    }),
     defaultValue: "pi_telemetry_plus_jsonl",
     cliFlag: "--telemetry",
     envVar: "CTX_CAPSULE_TELEMETRY",
@@ -1730,6 +2038,16 @@ export const SETTINGS_SCHEMA: readonly SettingOptionSpec[] = Object.freeze([
     category: "sampling_sdks",
     label: "Coding Agent SDK Integration Targets",
     choices: ["all_7_harnesses", "pi_and_antigravity", "opencode_and_claude", "google_adk_and_codex"],
+    choiceDescriptions: Object.freeze({
+      all_7_harnesses:
+        "Synchronizes all 8 agent bridges simultaneously: Pi, Antigravity (.mcp.json), OpenCode, Claude Code, Google ADK, Codex CLI, GitHub Copilot, and Weftd.",
+      pi_and_antigravity:
+        "Synchronizes only Pi (@earendil-works/pi-coding-agent) and Antigravity CLI MCP configs.",
+      opencode_and_claude:
+        "Synchronizes only OpenCode (opencode.json) and Claude Code (@anthropic-ai/sdk) configs.",
+      google_adk_and_codex:
+        "Synchronizes only Google ADK (@google/genai) and OpenAI Codex CLI (codex-config.toml) configs.",
+    }),
     defaultValue: "all_7_harnesses",
     cliFlag: "--sync-sdks",
     envVar: "CTX_SDK_TARGETS",

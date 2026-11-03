@@ -20,8 +20,10 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   ALL_BOOTSTRAP_AGENTS,
+  auditPiTuiInlineGraphics,
   Branded,
   BUILTIN_MODELS,
   BUILTIN_TEMPLATES,
@@ -52,6 +54,8 @@ import {
   registerCapsulePiExtension,
   runAgentBootstrapInit,
   runCapsuleCli,
+  runComprehensiveTuiScreencastAndAudit,
+  SETTINGS_SCHEMA,
   transition,
 } from "../src/index.ts";
 
@@ -234,15 +238,19 @@ describe("Tier 1: Native Pi SDK Extension (pi_sdk_extension.ts)", () => {
         }
       >();
 
+      type HookFn = NonNullable<ReturnType<typeof hooks.get>>;
+      type CmdSpec = NonNullable<ReturnType<typeof commands.get>>;
+      type ToolSpec = NonNullable<ReturnType<typeof tools.get>>;
       const mockPi = {
-        on(name: string, fn: any) {
-          hooks.set(name, fn);
+        on(name: string, fn: unknown) {
+          hooks.set(name, fn as HookFn);
         },
-        registerCommand(name: string, spec: any) {
-          commands.set(name, spec);
+        registerCommand(name: string, spec: unknown) {
+          commands.set(name, spec as CmdSpec);
         },
-        registerTool(spec: any) {
-          tools.set(spec.name, spec);
+        registerTool(spec: unknown) {
+          const typed = spec as ToolSpec;
+          tools.set(typed.name, typed);
         },
       };
 
@@ -357,7 +365,7 @@ describe("Tier 2: Universal Stdio JSON-RPC 2.0 MCP Server (ctx_capsule_mcp_serve
         method: "initialize",
       });
       assert.notEqual(initResp, null);
-      assert.equal((initResp?.result as any).serverInfo.name, "@r-irbe/ctx-capsule");
+      assert.equal((initResp?.result as { serverInfo: { name: string } }).serverInfo.name, "@r-irbe/ctx-capsule");
 
       // 2. tools/list
       const listResp = await server.handleJsonRpcRequest({
@@ -365,7 +373,7 @@ describe("Tier 2: Universal Stdio JSON-RPC 2.0 MCP Server (ctx_capsule_mcp_serve
         id: 2,
         method: "tools/list",
       });
-      const toolsList = (listResp?.result as any).tools as Array<{ name: string }>;
+      const toolsList = (listResp?.result as { tools: Array<{ name: string }> }).tools;
       assert.equal(toolsList.length, 5);
       assert.deepEqual(
         toolsList.map((t) => t.name),
@@ -386,7 +394,7 @@ describe("Tier 2: Universal Stdio JSON-RPC 2.0 MCP Server (ctx_capsule_mcp_serve
         method: "tools/call",
         params: { name: "capsule_status", arguments: {} },
       });
-      const statusData = JSON.parse((statusResp?.result as any).content[0].text) as {
+      const statusData = JSON.parse((statusResp?.result as { content: Array<{ text: string }> }).content[0].text) as {
         activeModelId: string;
         cliArgs: string[];
       };
@@ -407,7 +415,7 @@ describe("Tier 2: Universal Stdio JSON-RPC 2.0 MCP Server (ctx_capsule_mcp_serve
           },
         },
       });
-      const switchData = JSON.parse((switchResp?.result as any).content[0].text) as {
+      const switchData = JSON.parse((switchResp?.result as { content: Array<{ text: string }> }).content[0].text) as {
         activeModelId: string;
         activeTemplateId: string;
       };
@@ -437,7 +445,7 @@ describe("Tier 2: Universal Stdio JSON-RPC 2.0 MCP Server (ctx_capsule_mcp_serve
           },
         },
       });
-      const packData = JSON.parse((packResp?.result as any).content[0].text) as ReturnType<
+      const packData = JSON.parse((packResp?.result as { content: Array<{ text: string }> }).content[0].text) as ReturnType<
         typeof packContextCapsules
       >;
       assert.equal(packData.totalInputChunks, 6);
@@ -467,7 +475,7 @@ describe("Tier 2: Universal Stdio JSON-RPC 2.0 MCP Server (ctx_capsule_mcp_serve
           },
         },
       });
-      const syncData = JSON.parse((syncResp?.result as any).content[0].text) as {
+      const syncData = JSON.parse((syncResp?.result as { content: Array<{ text: string }> }).content[0].text) as {
         syncedHarnesses: string[];
       };
       assert.equal(syncData.syncedHarnesses.length, 7);
@@ -485,7 +493,7 @@ describe("Tier 2: Universal Stdio JSON-RPC 2.0 MCP Server (ctx_capsule_mcp_serve
           },
         },
       });
-      const ptoData = JSON.parse((ptoResp?.result as any).content[0].text) as {
+      const ptoData = JSON.parse((ptoResp?.result as { content: Array<{ text: string }> }).content[0].text) as {
         ptoReceipt: { branchMissReductionPct: number | null; cflagsProfile: string };
       };
       assert.equal(ptoData.ptoReceipt.branchMissReductionPct, null);
@@ -565,21 +573,82 @@ describe("Tier 3: Standardized Multi-Agent Bootstrap CLI (agent_bootstrap.ts)", 
 });
 
 describe("Interactive Pi-TUI Component Rendering & Mouse/Keyboard Hit Testing", () => {
-  it("renders exact 136-column TUI frames and dispatches mouse click and wheel events", () => {
+  it("renders exact 136-column and 88-column adaptive TUI frames and dispatches mouse click and wheel events", () => {
     const state = createInitialControlState();
     const comp = new CapsulePiTuiComponent({ initialState: state });
     const lines = comp.render(136);
     assert.equal(lines.length > 20, true);
     for (const line of lines) {
-      assert.equal(line.length, 136);
+      assert.equal(visibleWidth(line), 136);
     }
 
+    const narrowLines = comp.render(88);
+    assert.equal(narrowLines.length > 20, true);
+    for (const line of narrowLines) {
+      assert.equal(visibleWidth(line), 88);
+    }
+
+    comp.render(136);
     const snap = comp.getLastSnapshot();
     const tab2Region = snap.mouseRegions.find((r) => r.id === "tab:llama_fleet");
     assert.notEqual(tab2Region, undefined);
     if (tab2Region) {
       const hit = hitTestMouseRegions(snap.mouseRegions, tab2Region.x0 + 1, tab2Region.y0);
       assert.equal(hit?.id, "tab:llama_fleet");
+    }
+  });
+
+  it("provides non-empty choiceDescriptions for every variant of all 44 settings and passes the Playwright-for-TUI DevTools & Screencast audit", async () => {
+    assert.equal(SETTINGS_SCHEMA.length, 44);
+    let totalVariantsCount = 0;
+    for (const opt of SETTINGS_SCHEMA) {
+      assert.equal(opt.choices.length > 0, true, `Option ${opt.key} must have choices`);
+      for (const choice of opt.choices) {
+        totalVariantsCount++;
+        const desc = opt.choiceDescriptions[choice];
+        assert.equal(
+          typeof desc === "string" && desc.trim().length >= 16,
+          true,
+          `Missing or short choiceDescription for ${opt.key} -> ${choice}`,
+        );
+      }
+    }
+    assert.equal(totalVariantsCount >= 140, true);
+
+    const inlineGraphics = auditPiTuiInlineGraphics();
+    assert.equal(inlineGraphics.length, 7);
+    for (const entry of inlineGraphics) {
+      assert.equal(entry.pngBase64Length > 500, true);
+      assert.equal(entry.kittyValidApc, true);
+      assert.equal(entry.iterm2ValidOsc, true);
+    }
+
+    const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "capsule-screencast-"));
+    try {
+      const castPath = path.join(tmpRoot, "ctx_capsule_test.cast");
+      const htmlPath = path.join(tmpRoot, "ctx_capsule_test.html");
+      const jsonPath = path.join(tmpRoot, "ctx_capsule_test.audit.json");
+      const comp = new CapsulePiTuiComponent({ initialState: createInitialControlState() });
+
+      const auditRes = await runComprehensiveTuiScreencastAndAudit({
+        component: comp,
+        castOutputPath: castPath,
+        htmlOutputPath: htmlPath,
+        jsonReportPath: jsonPath,
+      });
+      assert.equal(auditRes.isOk(), true);
+      if (auditRes.isOk()) {
+        const rep = auditRes.value;
+        assert.equal(rep.categoriesAudited, 7);
+        assert.equal(rep.totalSettingsAudited, 44);
+        assert.equal(rep.totalVariantsCycledAndVerified, totalVariantsCount);
+        assert.equal(rep.helpModalVerified, true);
+        assert.equal(rep.responsive88ColVerified, true);
+        assert.deepEqual(rep.geometryViolations, []);
+        assert.deepEqual(rep.explanationViolations, []);
+      }
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
     }
   });
 });
