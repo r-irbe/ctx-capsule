@@ -1,53 +1,28 @@
 # `@r-irbe/ctx-capsule`
 
-**Pure TypeScript FOOP Hexagonal Control Plane, 5-Layer Hierarchical TOML Compiler, In-Place `llama.cpp` / `ik_llama.cpp` Fleet Manager, and 3-Tier Standardized Coding-Agent Integration for Binary Fuse8 & SimHash-64 Context Capsules.**
+**Fit 256K to 10M tokens of repository context into your coding agents, manage local `llama-server` fleets without downtime, and wire every agent host in one command.**
+
+`@r-irbe/ctx-capsule` is a TypeScript control plane, context deduplicator, and fleet manager for local [`llama.cpp`](https://github.com/ggerganov/llama.cpp) and [`llama.cpp-opt`](https://github.com/r-irbe/llama.cpp-opt) servers.
+
+![ctx-capsule Architecture and Customer Journeys](docs/assets/overview.png)
 
 ---
 
-## Overview
+## Why Use `ctx-capsule`? (What Problem Does It Solve?)
 
-`@r-irbe/ctx-capsule` manages ultra-long context (`256K` to `10M` tokens), Binary Fuse8/16 + SimHash-64 KV context capsules, ColBERT MaxSim + Exact-Cover evidence pruning, ZDD 64-token sparse KV skipping, cross-slot cohort KV cloning, and Clang-21 IRPGO + ThinLTO Profile-Targeted Optimization (`build-pto/bin/llama-server`) across local `llama.cpp` and `ik_llama.cpp` inference fleets.
+When you point AI coding agents (Claude Code, Cursor, Pi, Antigravity, OpenCode, or Codex) at a large repository, three problems slow you down:
 
-The repository is structured as a **Pure Functional Object-Oriented Programming (FOOP) Hexagonal Architecture**:
-- **Zero-Exception Domain Core (`src/domain/`)**: Branded nominal types (`ModelId`, `TemplateId`, `ProfileId`, `InstanceId`, `PortNumber`, `FilePath`), `Result<T, DomainError>` ADTs, immutable `CapsuleControlState` reducer (`transition`), 5-layer hierarchical TOML compiler/parser, and deterministic 64-bit SimHash + Binary Fuse8 + MaxSim context packer (`evidence_packer.ts`).
-- **Outbound Ports (`src/ports/outbound.ts`)**: Explicit interfaces for TOML persistence, `llama-server` fleet lifecycle, live GPU/HTTP telemetry, `@earendil-works/pi-telemetry` hash-chained spans, PTO compilation, and multi-agent SDK bridges.
-- **Hexagonal Adapters (`src/adapters/`)**: Interactive fullscreen `@earendil-works/pi-tui` mouse/keyboard TUI (`pi_tui_adapter.ts`), in-place `llama-server` process manager (`atomic_port_rebind` and `zero_downtime_shadow` staging port handover), live `nvidia-smi` + `/proc/meminfo` + `/metrics` poller, and Clang-21 IRPGO/ThinLTO builder.
+1. **Repeated files and tool logs blow up the context window**: Standard agents respond by running lossy chat summaries that forget exact variable names, file paths, and error messages. `ctx-capsule` packs context using fast *SimHash-64*[^simhash] and *Binary Fuse8*[^fuse8] fingerprints to strip duplicates while boosting exact code symbols.
+2. **Every coding agent wants a different config file**: Wiring the same local model server across 6 or 8 different agent CLIs takes tedious manual JSON/TOML editing. `ctx-capsule init` configures all of them in a single command.
+3. **Switching models or context sizes interrupts active work**: Restarting `llama-server` drops in-flight agent requests. `ctx-capsule` launches the new configuration on a staging port and swaps traffic only after health checks pass.
 
 ---
 
-## 3-Tier Standardized Coding-Agent Integration
+## Start in 2 Minutes
 
-### Tier 1: Native `@earendil-works/pi-coding-agent` Extension (`@r-irbe/ctx-capsule/pi-extension`)
+### 1. Initialize Your Workspace & Wire Your Coding Agents
 
-First-class plugin for Pi and `pi-harness-bridge`:
-- **Slash command**: `/capsule [status | preset <id> | model <id> | sync | pto | tui | tune <k=v> | help]`
-- **Tool**: `ctx_capsule` (`status`, `preset`, `model`, `pack`, `sync`, `pto`)
-- **Lifecycle Hooks (`before_model_request`, `session_start`, `turn_start`)**: Automatically attaches active cohort and evidence capsule headers (`X-Llama-Cohort`, `X-Llama-Capsule-Filter`, `X-Evidence-Filter`, `X-Evidence-Strategy`, `X-Evidence-Top-K`, `X-Evidence-Symbol-Boost`, `X-Evidence-Chunk-Expansion`, `X-Llama-Thinking-Effort`) plus `requestDefaults` to outgoing model requests, and suppresses lossy chat compaction (`compaction: "disabled_by_fuse8_capsules"`) whenever Binary Fuse8/16 capsules are active.
-- **Status Bar Widget**: `getStatusBarWidget()` and `formatStatusBarLine(state)`.
-
-```ts
-import registerCapsulePiExtension, { createCapsulePiExtension } from "@r-irbe/ctx-capsule/pi-extension";
-
-// Register directly on a Pi ExtensionAPI instance:
-registerCapsulePiExtension(pi, {
-  initialModelId: "deepseek-v4.1-1017-ud-q4kxl",
-  initialTemplateId: "ds41-1017-np1-512k-max-speed",
-});
-```
-
-### Tier 2: Universal Stdio JSON-RPC 2.0 MCP Server (`ctx-capsule-mcp` / `@r-irbe/ctx-capsule/mcp`)
-
-Zero-dependency stdio MCP server compatible with **Claude Code**, **Antigravity CLI**, **OpenCode**, **Cursor**, **Codex CLI**, **GitHub Copilot**, and **Weft (`weftd` / `oh-my-agents`)**. Exposes 5 tools:
-
-1. `capsule_status`: Returns active model, template preset, VRAM/RAM tier metrics, status bar line, and resolved `llama-server` CLI arguments (`--evidence-filter`, `--evidence-strategy`, `--evidence-top-k`, `--evidence-symbol-boost`, `--evidence-chunk-expansion`).
-2. `capsule_switch_preset`: Switches active template (`templateId`) and/or model (`modelId`) and returns the updated state and CLI flags.
-3. `capsule_pack_context`: Accepts `{ chunks: string[] | string, query?: string, keepRatio?: number, symbolBoost?: number }`, computes deterministic 64-bit SimHash + Binary Fuse8 fingerprint deduplication and MaxSim token-overlap scoring (with code identifier/symbol boost), and returns the selected evidence capsule chunks, deduplicated fingerprint count, and token compression ratio.
-4. `capsule_sync_agents`: Synchronizes agent SDK configurations for any subset of `["pi", "antigravity", "opencode", "claude", "google_adk", "codex", "copilot", "weftd"]`.
-5. `capsule_pto_tune`: Runs Clang-21 IRPGO + ThinLTO + Machine Function Splitting (`dry_run` or `live`).
-
-### Tier 3: Standardized Multi-Agent Bootstrap CLI (`ctx-capsule init`)
-
-Scaffolds `.ctx-capsule/config.toml` and `.ctx-capsule/templates/*.toml`, and wires any combination of coding agents in one command:
+Run one command in your repository root to generate `.ctx-capsule/config.toml` and wire your installed coding agents:
 
 ```bash
 npx @r-irbe/ctx-capsule init \
@@ -57,31 +32,86 @@ npx @r-irbe/ctx-capsule init \
   --model deepseek-v4.1-1017-ud-q4kxl
 ```
 
-| Agent Target | Generated / Merged Wiring Files |
-| :--- | :--- |
-| `pi` | `.pi/provider-capsule.json` + `.pi/extensions/ctx-capsule.json` |
-| `antigravity` / `claude` / `cursor` | `.mcp.json` (`mcpServers.ctx-capsule` -> `ctx-capsule-mcp`) |
-| `opencode` | `opencode.json` (`provider.ctx_capsule` + `mcp.ctx-capsule`) |
-| `codex` | `.codex/config.toml` (`model_providers.ctx_capsule` + `mcp_servers.ctx-capsule`) |
-| `copilot` | `.github/copilot-capsule.json` |
-| `weftd` (`oh-my-agents`) | `.weft/capsule-bridge.json` |
+### 2. Inspect Fleet Status or Launch the Fullscreen TUI
+
+```bash
+# Print a single-screen status summary (active model, VRAM/RAM usage, resolved flags)
+node --experimental-strip-types ./src/cli_entry.ts status
+
+# Launch the interactive keyboard/mouse terminal dashboard
+node --experimental-strip-types ./src/cli_entry.ts tui
+```
 
 ---
 
-## CLI Usage & Verification
+## Adapt to Your Use Case (Customer Journeys)
 
-```bash
-# Render single 136-column status frame
-node --experimental-strip-types ./src/cli_entry.ts status
+<details open>
+<summary><b>1. Coding With Massive Repositories (256K-10M Context Without Lossy Summaries)</b></summary>
 
-# Launch interactive fullscreen @earendil-works/pi-tui control plane
-node --experimental-strip-types ./src/cli_entry.ts tui
+- **Who this is for**: Engineers working across hundreds of source files where standard chat compaction forgets critical details.
+- **Problem solved**: Instead of summarizing away your code, `capsule_pack_context` deduplicates repeated chunks and scores relevant code identifiers using *MaxSim*[^maxsim] token overlap.
+- **How to use it**: Call the `capsule_pack_context` MCP tool from Claude Code, Cursor, or Antigravity, or load the native Pi extension (`@r-irbe/ctx-capsule/pi-extension`) which automatically disables lossy compaction when Fuse8 capsules are active.
+</details>
 
-# Run test suite & TypeScript typecheck
-npm test
-npm run typecheck
+<details>
+<summary><b>2. Multi-Agent Teams Using Different IDEs & CLIs</b></summary>
+
+- **Who this is for**: Developers or teams who switch between Claude Code, Cursor, Pi, OpenCode, Codex, and GitHub Copilot against a shared local inference server.
+- **Problem solved**: Keeps model IDs, context limits, and MCP tool definitions synchronized across every tool.
+
+| Agent Host | Generated / Synchronized Configuration File |
+| :--- | :--- |
+| **Pi** | `.pi/provider-capsule.json` + `.pi/extensions/ctx-capsule.json` |
+| **Claude Code / Cursor / Antigravity** | `.mcp.json` (`mcpServers.ctx-capsule` -> `ctx-capsule-mcp`) |
+| **OpenCode** | `opencode.json` (`provider.ctx_capsule` + `mcp.ctx-capsule`) |
+| **Codex CLI** | `.codex/config.toml` (`model_providers.ctx_capsule` + `mcp_servers.ctx-capsule`) |
+| **GitHub Copilot** | `.github/copilot-capsule.json` |
+| **Weft (`weftd`)** | `.weft/capsule-bridge.json` |
+</details>
+
+<details>
+<summary><b>3. Zero-Downtime Model Switching & Profile-Guided Server Builds</b></summary>
+
+- **Who this is for**: Operators running local `llama-server` fleets who want to switch presets or recompile with Clang Profile-Targeted Optimization (`build-pto/bin/llama-server`) without dropping active sessions.
+- **How to use it**: Use `/capsule preset <id>` in Pi or call `capsule_switch_preset` / `capsule_pto_tune` via MCP.
+</details>
+
+---
+
+## Technical Reference & Architecture Details
+
+<details>
+<summary><b>View MCP Tools, Pi Extension API, and Hexagonal Architecture</b></summary>
+
+### Universal Stdio MCP Server (`ctx-capsule-mcp`)
+Exposes 5 zero-dependency tools over stdio JSON-RPC 2.0:
+1. `capsule_status`: Active model, preset, VRAM/RAM metrics, and resolved `llama-server` CLI arguments.
+2. `capsule_switch_preset`: Hot-swaps the active template (`templateId`) or model (`modelId`).
+3. `capsule_pack_context`: Deduplicates chunks via 64-bit SimHash + Binary Fuse8 and ranks chunks with code-symbol boosting.
+4. `capsule_sync_agents`: Re-synchronizes configuration files across any subset of supported agents.
+5. `capsule_pto_tune`: Triggers Clang IRPGO + ThinLTO profile-guided builds (`dry_run` or `live`).
+
+### Native Pi Extension (`@r-irbe/ctx-capsule/pi-extension`)
+```ts
+import registerCapsulePiExtension from "@r-irbe/ctx-capsule/pi-extension";
+
+registerCapsulePiExtension(pi, {
+  initialModelId: "deepseek-v4.1-1017-ud-q4kxl",
+  initialTemplateId: "ds41-1017-np1-512k-max-speed",
+});
 ```
+
+### Codebase Layout & Verification
+- `src/domain/`: Zero-exception domain core (`Result<T, DomainError>`), 5-layer TOML compiler, and `evidence_packer.ts`.
+- `src/ports/` & `src/adapters/`: Fullscreen TUI adapter (`pi_tui_adapter.ts`), zero-downtime process manager, and live GPU/HTTP telemetry poller.
+- Run verification: `npm test && npm run typecheck`.
+</details>
 
 ## License
 
 Apache-2.0
+
+[^simhash]: **SimHash-64**: A fast locality-sensitive hash that gives similar text chunks nearly identical 64-bit fingerprints so near-duplicates can be spotted in nanoseconds.
+[^fuse8]: **Binary Fuse8 Filter**: A compact probabilistic data structure (using ~1.125 bytes per entry) that tests whether a context chunk has already been seen.
+[^maxsim]: **MaxSim Scoring**: A relevance ranking method that scores how strongly a chunk matches the exact function, class, and variable names in your query.
