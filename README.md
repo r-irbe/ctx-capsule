@@ -46,6 +46,8 @@ node --experimental-strip-types ./src/cli_entry.ts tui
 
 ## Adapt to Your Use Case (Customer Journeys)
 
+![How ctx-capsule Preserves Exact Code Symbols & Eliminates Downtime](docs/assets/mechanics.png)
+
 <details open>
 <summary><b>1. Coding With Massive Repositories (256K-10M Context Without Lossy Summaries)</b></summary>
 
