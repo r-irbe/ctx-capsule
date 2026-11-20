@@ -189,6 +189,12 @@ export interface ConfigTemplateSpec {
   readonly targetUseCase: string;
   readonly builtIn: boolean;
   readonly overrides: Readonly<Record<string, string>>;
+  /** Model key this template launches (generated profiles); preserved across load/export. */
+  readonly baseModel?: string;
+  /** Resource-budget tier of a generated profile: full, shared, light, cpu or v<VRAM>r<RAM>t<THREADS>. */
+  readonly tier?: string;
+  /** Whether the profile metrics were measured on this host (live) or estimated (simulated). */
+  readonly evaluationMode?: string;
 }
 
 export interface HardwareProfileSpec {

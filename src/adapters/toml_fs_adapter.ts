@@ -187,6 +187,9 @@ export class FileSystemTomlConfigAdapter implements TomlConfigRepositoryPort {
           targetUseCase: metaSection.target_use_case ?? "Custom TOML template",
           builtIn: metaSection.built_in === "true",
           overrides: Object.freeze({ ...overridesSection }),
+          ...(metaSection.base_model ? { baseModel: metaSection.base_model } : {}),
+          ...(metaSection.tier ? { tier: metaSection.tier } : {}),
+          ...(metaSection.evaluation_mode ? { evaluationMode: metaSection.evaluation_mode } : {}),
         }),
       );
     }

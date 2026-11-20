@@ -50,6 +50,7 @@ import {
   packContextCapsules,
   parseLayeredTomlDocument,
   PiCapsuleTelemetryAdapter,
+  renderTemplateToml,
   Result,
   registerCapsulePiExtension,
   runAgentBootstrapInit,
@@ -170,6 +171,42 @@ describe("ctx-capsule Pure FOOP State Machine, TOML Hierarchy & Gate 4 CLI Flags
       assert.equal(parsedDefaults.value.defaults.evidence_strategy, "maxsim_exact_cover");
       assert.equal(parsedDefaults.value.pto.pto_mode, "irpgo_thinlto_split");
     }
+  });
+
+  it("round-trips generated template metadata and preserves legacy templates", async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ctx-capsule-template-"));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const templatesDir = path.join(root, "templates");
+    await fs.mkdir(templatesDir);
+    const generatedToml = [
+      "[templates.generated]",
+      'display_name = "Generated profile"',
+      'base_model = "qwen38_27b"',
+      'tier = "v24r32t8"',
+      'evaluation_mode = "simulated"',
+      "[templates.generated.overrides]",
+      "ctx_size = 32768",
+      "",
+    ].join("\n");
+    await fs.writeFile(path.join(templatesDir, "generated.toml"), generatedToml);
+    await fs.writeFile(path.join(templatesDir, "legacy.toml"), '[template]\ndisplay_name = "Legacy"\n');
+
+    const adapter = new FileSystemTomlConfigAdapter({ workspaceRoot: root });
+    const hierarchy = Branded.unsafeFilePath(root);
+    const templates = (await adapter.loadSavedTemplates(hierarchy)).unwrapOr([]);
+    assert.equal(templates.length, 2);
+    const [generated, legacy] = templates;
+    assert.equal(generated.baseModel, "qwen38_27b");
+    assert.equal(generated.tier, "v24r32t8");
+    assert.equal(generated.evaluationMode, "simulated");
+    assert.deepEqual(generated.overrides, { ctx_size: "32768" });
+    assert.equal(Object.hasOwn(legacy, "baseModel"), false);
+    assert.equal(Object.hasOwn(legacy, "tier"), false);
+    assert.equal(Object.hasOwn(legacy, "evaluationMode"), false);
+    assert.doesNotMatch(renderTemplateToml(legacy), /^\s*(base_model|tier|evaluation_mode)\s*=/m);
+
+    await fs.writeFile(path.join(templatesDir, "generated.toml"), renderTemplateToml(generated));
+    assert.deepEqual((await adapter.loadSavedTemplates(hierarchy)).unwrapOr([]), templates);
   });
 
   it("loads saved templates on CLI startup and supports --model, --template, and --port flags", async () => {

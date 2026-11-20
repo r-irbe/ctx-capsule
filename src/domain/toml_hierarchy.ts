@@ -206,6 +206,9 @@ export function renderTemplateToml(template: ConfigTemplateSpec): string {
     `description = "${escapeTomlString(template.description)}"`,
     `target_use_case = "${escapeTomlString(template.targetUseCase)}"`,
     `built_in = ${template.builtIn ? "true" : "false"}`,
+    ...(template.baseModel ? [`base_model = "${escapeTomlString(template.baseModel)}"`] : []),
+    ...(template.tier ? [`tier = "${escapeTomlString(template.tier)}"`] : []),
+    ...(template.evaluationMode ? [`evaluation_mode = "${escapeTomlString(template.evaluationMode)}"`] : []),
     "",
     `[templates.${template.id}.overrides]`,
   ];
